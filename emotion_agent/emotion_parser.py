@@ -113,229 +113,229 @@ class EmotionParser:
             interaction_id,
         )
 
-@classmethod
-def _recover_partial_json(
-    cls,
-    raw_text: str,
-) -> Dict[str, Any] | None:
-    """
-    Attempts conservative recovery from partially malformed JSON.
+    @classmethod
+    def _recover_partial_json(
+        cls,
+        raw_text: str,
+    ) -> Dict[str, Any] | None:
+        """
+        Attempts conservative recovery from partially malformed JSON.
 
-    The method extracts fields independently instead of attempting
-    to reconstruct arbitrary JSON.
-    """
+        The method extracts fields independently instead of attempting
+        to reconstruct arbitrary JSON.
+        """
 
-    data: Dict[str, Any] = {}
+        data: Dict[str, Any] = {}
 
-    # ---------------------------------------------------------
-    # primary_emotion
-    # ---------------------------------------------------------
+        # ---------------------------------------------------------
+        # primary_emotion
+        # ---------------------------------------------------------
 
-    match = re.search(
-        r'"primary_emotion"\s*:\s*"([^"]+)"',
-        raw_text,
-        re.IGNORECASE,
-    )
-
-    if match:
-        data["primary_emotion"] = match.group(1).strip()
-
-    # ---------------------------------------------------------
-    # emotional_summary
-    # ---------------------------------------------------------
-
-    match = re.search(
-        r'"emotional_summary"\s*:\s*"([^"]*)"',
-        raw_text,
-        re.IGNORECASE,
-    )
-
-    if match:
-        data["emotional_summary"] = match.group(1).strip()
-
-    # ---------------------------------------------------------
-    # emotions
-    # ---------------------------------------------------------
-
-    emotions_match = re.search(
-        r'"emotions"\s*:\s*\[(.*?)(?:\]|$)',
-        raw_text,
-        re.DOTALL | re.IGNORECASE,
-    )
-
-    if emotions_match:
-        emotions_raw = emotions_match.group(1)
-
-        # Recover individual emotion objects.
-        emotion_objects = re.findall(
-            r'\{(.*?)\}',
-            emotions_raw,
-            re.DOTALL,
+        match = re.search(
+            r'"primary_emotion"\s*:\s*"([^"]+)"',
+            raw_text,
+            re.IGNORECASE,
         )
 
-        recovered_emotions = []
+        if match:
+            data["primary_emotion"] = match.group(1).strip()
 
-        for obj in emotion_objects:
-            emotion_match = re.search(
-                r'"emotion"\s*:\s*"([^"]+)"',
-                obj,
-                re.IGNORECASE,
+        # ---------------------------------------------------------
+        # emotional_summary
+        # ---------------------------------------------------------
+
+        match = re.search(
+            r'"emotional_summary"\s*:\s*"([^"]*)"',
+            raw_text,
+            re.IGNORECASE,
+        )
+
+        if match:
+            data["emotional_summary"] = match.group(1).strip()
+
+        # ---------------------------------------------------------
+        # emotions
+        # ---------------------------------------------------------
+
+        emotions_match = re.search(
+            r'"emotions"\s*:\s*\[(.*?)(?:\]|$)',
+            raw_text,
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        if emotions_match:
+            emotions_raw = emotions_match.group(1)
+
+            # Recover individual emotion objects.
+            emotion_objects = re.findall(
+                r'\{(.*?)\}',
+                emotions_raw,
+                re.DOTALL,
             )
 
-            intensity_match = re.search(
-                r'"intensity"\s*:\s*([0-9.]+)',
-                obj,
-                re.IGNORECASE,
-            )
+            recovered_emotions = []
 
-            confidence_match = re.search(
-                r'"confidence"\s*:\s*([0-9.]+)',
-                obj,
-                re.IGNORECASE,
-            )
+            for obj in emotion_objects:
+                emotion_match = re.search(
+                    r'"emotion"\s*:\s*"([^"]+)"',
+                    obj,
+                    re.IGNORECASE,
+                )
 
-            source_match = re.search(
-                r'"source"\s*:\s*"([^"]+)"',
-                obj,
-                re.IGNORECASE,
-            )
+                intensity_match = re.search(
+                    r'"intensity"\s*:\s*([0-9.]+)',
+                    obj,
+                    re.IGNORECASE,
+                )
 
-            if not emotion_match:
-                continue
+                confidence_match = re.search(
+                    r'"confidence"\s*:\s*([0-9.]+)',
+                    obj,
+                    re.IGNORECASE,
+                )
 
-            recovered_emotions.append(
-                {
-                    "emotion": emotion_match.group(1).strip(),
-                    "intensity": float(
-                        intensity_match.group(1)
-                    )
-                    if intensity_match
-                    else 0.5,
-                    "confidence": float(
-                        confidence_match.group(1)
-                    )
-                    if confidence_match
-                    else 0.5,
-                    "source": (
-                        source_match.group(1).strip()
-                        if source_match
-                        else "partial_json_recovery"
-                    ),
-                }
-            )
+                source_match = re.search(
+                    r'"source"\s*:\s*"([^"]+)"',
+                    obj,
+                    re.IGNORECASE,
+                )
 
-        if recovered_emotions:
-            data["emotions"] = recovered_emotions
+                if not emotion_match:
+                    continue
 
-    # ---------------------------------------------------------
-    # behavioral_signals
-    # ---------------------------------------------------------
+                recovered_emotions.append(
+                    {
+                        "emotion": emotion_match.group(1).strip(),
+                        "intensity": float(
+                            intensity_match.group(1)
+                        )
+                        if intensity_match
+                        else 0.5,
+                        "confidence": float(
+                            confidence_match.group(1)
+                        )
+                        if confidence_match
+                        else 0.5,
+                        "source": (
+                            source_match.group(1).strip()
+                            if source_match
+                            else "partial_json_recovery"
+                        ),
+                    }
+                )
 
-    match = re.search(
-        r'"behavioral_signals"\s*:\s*\[(.*?)\]',
-        raw_text,
-        re.DOTALL | re.IGNORECASE,
-    )
+            if recovered_emotions:
+                data["emotions"] = recovered_emotions
 
-    if match:
-        try:
-            data["behavioral_signals"] = json.loads(
-                "[" + match.group(1) + "]"
-            )
-        except json.JSONDecodeError:
-            pass
+        # ---------------------------------------------------------
+        # behavioral_signals
+        # ---------------------------------------------------------
 
-    # ---------------------------------------------------------
-    # decision_signals
-    # ---------------------------------------------------------
+        match = re.search(
+            r'"behavioral_signals"\s*:\s*\[(.*?)\]',
+            raw_text,
+            re.DOTALL | re.IGNORECASE,
+        )
 
-    match = re.search(
-        r'"decision_signals"\s*:\s*\[(.*?)\]',
-        raw_text,
-        re.DOTALL | re.IGNORECASE,
-    )
+        if match:
+            try:
+                data["behavioral_signals"] = json.loads(
+                    "[" + match.group(1) + "]"
+                )
+            except json.JSONDecodeError:
+                pass
 
-    if match:
-        try:
-            data["decision_signals"] = json.loads(
-                "[" + match.group(1) + "]"
-            )
-        except json.JSONDecodeError:
-            pass
+        # ---------------------------------------------------------
+        # decision_signals
+        # ---------------------------------------------------------
 
-    # ---------------------------------------------------------
-    # goal_relevance
-    # ---------------------------------------------------------
+        match = re.search(
+            r'"decision_signals"\s*:\s*\[(.*?)\]',
+            raw_text,
+            re.DOTALL | re.IGNORECASE,
+        )
 
-    related_match = re.search(
-        r'"related"\s*:\s*(true|false)',
-        raw_text,
-        re.IGNORECASE,
-    )
+        if match:
+            try:
+                data["decision_signals"] = json.loads(
+                    "[" + match.group(1) + "]"
+                )
+            except json.JSONDecodeError:
+                pass
 
-    goal_match = re.search(
-        r'"goal"\s*:\s*"([^"]*)"',
-        raw_text,
-        re.IGNORECASE,
-    )
+        # ---------------------------------------------------------
+        # goal_relevance
+        # ---------------------------------------------------------
 
-    if related_match:
-        data["goal_relevance"] = {
-            "related": related_match.group(1).lower() == "true",
-            "goal": (
-                goal_match.group(1).strip()
-                if goal_match
-                else None
-            ),
-        }
+        related_match = re.search(
+            r'"related"\s*:\s*(true|false)',
+            raw_text,
+            re.IGNORECASE,
+        )
 
-    # ---------------------------------------------------------
-    # Cannot recover anything useful
-    # ---------------------------------------------------------
+        goal_match = re.search(
+            r'"goal"\s*:\s*"([^"]*)"',
+            raw_text,
+            re.IGNORECASE,
+        )
 
-    if "primary_emotion" not in data:
-        return None
-
-    # ---------------------------------------------------------
-    # Fill only missing required fields
-    # ---------------------------------------------------------
-
-    data.setdefault(
-        "emotions",
-        [
-            {
-                "emotion": data["primary_emotion"],
-                "intensity": 0.5,
-                "confidence": 0.5,
-                "source": "partial_json_recovery",
+        if related_match:
+            data["goal_relevance"] = {
+                "related": related_match.group(1).lower() == "true",
+                "goal": (
+                    goal_match.group(1).strip()
+                    if goal_match
+                    else None
+                ),
             }
-        ],
-    )
 
-    data.setdefault(
-        "emotional_summary",
-        "Emotion inferred from partially recovered model output.",
-    )
+        # ---------------------------------------------------------
+        # Cannot recover anything useful
+        # ---------------------------------------------------------
 
-    data.setdefault(
-        "behavioral_signals",
-        [],
-    )
+        if "primary_emotion" not in data:
+            return None
 
-    data.setdefault(
-        "decision_signals",
-        [],
-    )
+        # ---------------------------------------------------------
+        # Fill only missing required fields
+        # ---------------------------------------------------------
 
-    data.setdefault(
-        "goal_relevance",
-        {
-            "related": False,
-            "goal": None,
-        },
-    )
+        data.setdefault(
+            "emotions",
+            [
+                {
+                    "emotion": data["primary_emotion"],
+                    "intensity": 0.5,
+                    "confidence": 0.5,
+                    "source": "partial_json_recovery",
+                }
+            ],
+        )
 
-    return data
+        data.setdefault(
+            "emotional_summary",
+            "Emotion inferred from partially recovered model output.",
+        )
+
+        data.setdefault(
+            "behavioral_signals",
+            [],
+        )
+
+        data.setdefault(
+            "decision_signals",
+            [],
+        )
+
+        data.setdefault(
+            "goal_relevance",
+            {
+                "related": False,
+                "goal": None,
+            },
+        )
+
+        return data
 
     @classmethod
     def _build_safe_fallback(

@@ -54,7 +54,7 @@ class LLMClient:
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
         json_mode: bool = False,
-        max_tokens: int = 1500,
+        max_tokens: int = 5500,
     ) -> str:
         """Generates text completion using configured OpenRouter / OpenAI model."""
         if not self.api_key:
