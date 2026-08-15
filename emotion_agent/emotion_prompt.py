@@ -4,6 +4,7 @@ Builds contextualized prompts combining student messages, ML emotion signals,
 historical memories, and active goals.
 """
 
+from pygments.token import Escape
 import json
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +31,16 @@ def build_emotion_analysis_prompt(
         "3. Focus on empathetic, student-centered behavioral patterns (e.g. academic avoidance, placement anxiety, procrastination, fatigue, perfectionism).\n"
         "4. Identify actionable behavioral signals (actions taken/avoided) and decision signals (conscious/unconscious choices).\n"
         "5. Output strictly valid JSON matching the specified schema with NO extra markdown preamble.\n"
+        "Return ONLY a valid JSON object.\n"
+        "Rules:\n"
+        "1. Do not use markdown.\n"
+        "2. Do not wrap the response in ```json.\n"
+        "3. Do not include explanations before or after the JSON.\n"
+        "4. Every string must be properly closed.\n"
+        "5. Escape all quotes inside strings.\n"
+        "6. Do not output trailing commas.\n"
+        "7. Do not truncate the response.\n"
+        "8. Follow the requested schema exactly.\n"
     )
 
     # Format contextual elements

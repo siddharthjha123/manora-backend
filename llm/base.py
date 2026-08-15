@@ -88,7 +88,26 @@ class LLMClient:
                 )
                 response.raise_for_status()
                 data = response.json()
-                content = data["choices"][0]["message"]["content"]
+
+                choice = data.get("choices", [{}])[0]
+                message = choice.get("message", {})
+
+                content = message.get("content")
+
+                if content is None:
+                    logger.error(
+                        "LLM returned no message content. Full response: %s",
+                        json.dumps(data, ensure_ascii=False)[:2000],
+                    )
+
+                    # Some models may return structured/reasoning content instead.
+                    reasoning = message.get("reasoning")
+
+                    if reasoning:
+                        logger.warning("LLM returned reasoning but no content.")
+                    
+                    raise LLMError("LLM returned empty message content")
+
                 return content
 
         except Exception as e:

@@ -145,13 +145,14 @@ class QdrantAdapter:
                 search_filter = Filter(
                     must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
                 )
-                results = self.client.search(
+                results = self.client.query_points(
                     collection_name=self.COLLECTION_NAME,
-                    query_vector=query_vector,
+                    query=query_vector,
                     query_filter=search_filter,
                     limit=limit,
                     score_threshold=score_threshold,
-                )
+                ).points
+
                 return [
                     {
                         "memory_id": hit.payload.get("memory_id"),

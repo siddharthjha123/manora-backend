@@ -74,7 +74,7 @@ class DatabaseManager:
         interaction_id = str(interaction_id or uuid.uuid4())
         user_id = str(user_id)
         session_id = str(session_id)
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         record = {
             "id": interaction_id,
@@ -155,7 +155,7 @@ class DatabaseManager:
         """Saves structured Emotion Agent analysis JSON."""
         analysis_id = str(uuid.uuid4())
         interaction_id = str(interaction_id)
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         record = {
             "id": analysis_id,
@@ -222,7 +222,7 @@ class DatabaseManager:
     ) -> List[Dict[str, Any]]:
         """Saves candidate memories extracted from interaction."""
         saved = []
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.timezone.utc)
         user_id = str(user_id)
         interaction_id = str(interaction_id)
 
@@ -300,7 +300,7 @@ class DatabaseManager:
         """Inserts or updates Buddy emotional state for a student."""
         user_id = str(user_id)
         state_id = str(state_dict.get("id") or uuid.uuid4())
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         record = {
             "id": state_id,
@@ -363,7 +363,7 @@ class DatabaseManager:
         """Saves audit record of Buddy state transition."""
         history_id = str(uuid.uuid4())
         user_id = str(user_id)
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         record = {
             "id": history_id,
@@ -461,7 +461,7 @@ class DatabaseManager:
         """Creates a goal for a student."""
         goal_id = str(uuid.uuid4())
         user_id = str(user_id)
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.timezone.utc)
         record = {
             "id": goal_id,
             "user_id": user_id,

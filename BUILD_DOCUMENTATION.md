@@ -196,7 +196,7 @@ cp .env.example .env
 
 Key environment variables:
 ```ini
-DATABASE_URL=postgresql://neondb_owner:npg_6L8eUTScoOkB@ep-wandering-waterfall-azuid8nz-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/manora
 OPENROUTER_API_KEY=your_openrouter_key
 MODEL_NAME=openai/gpt-4o-mini
 QDRANT_ENABLED=false
