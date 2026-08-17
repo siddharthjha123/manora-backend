@@ -1,31 +1,28 @@
-"""MANORA Data Agent schema definitions.
+"""Pydantic contracts for candidate evidence and Data Agent V1 results."""
 
-``CandidateMemory`` remains the evidence/input contract produced by the
-extraction stage.  The remaining models describe the isolated V1
-consolidation result and deliberately contain no persistence concerns.
-"""
-
+from enum import Enum
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, field_validator
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CandidateMemoryEvent(BaseModel):
-    type: str = Field(..., description="Event classification (e.g. study_avoidance, exam_preparation)")
-    description: str = Field(..., description="Details of the event occurred")
+    type: str = Field(..., description="Event classification")
+    description: str = Field(..., description="Details of the event")
 
 
 class CandidateMemoryBehavior(BaseModel):
-    type: str = Field(..., description="Behavioral classification (e.g. avoidance, procrastination, engagement)")
-    description: str = Field(..., description="Description of the student's behavior")
+    type: str = Field(..., description="Behavioral classification")
+    description: str = Field(..., description="Description of the behavior")
 
 
 class CandidateMemoryDecision(BaseModel):
-    description: str = Field(..., description="Description of the decision or choice made by student")
+    description: str = Field(..., description="Decision or choice made by the student")
 
 
 class CandidateMemoryGoalRelevance(BaseModel):
-    related: bool = Field(default=False)
-    goal: Optional[str] = Field(default=None)
+    related: bool = False
+    goal: Optional[str] = None
 
 
 class CandidateMemoryEmotion(BaseModel):
@@ -34,88 +31,127 @@ class CandidateMemoryEmotion(BaseModel):
 
 
 class CandidateMemory(BaseModel):
-    """Structured candidate memory produced by Data Agent for storage evaluation."""
+    """Evidence produced by the extraction stage; not long-term memory."""
+
     id: Optional[str] = None
-    # Optional for backwards compatibility with the existing extraction path.
-    # DataAgent.consolidate() requires this value so evidence is never compared
-    # across users.
     user_id: Optional[str] = None
-    content: str = Field(..., description="Core narrative content of the memory")
-    context: Dict[str, Any] = Field(default_factory=dict, description="Topic, subtopic metadata")
+    content: str = Field(..., description="Core narrative content of the observation")
+    context: Dict[str, Any] = Field(default_factory=dict)
     emotional_state: List[CandidateMemoryEmotion] = Field(default_factory=list)
     events: List[CandidateMemoryEvent] = Field(default_factory=list)
     behavior: Optional[CandidateMemoryBehavior] = None
     decision: Optional[CandidateMemoryDecision] = None
     goal_relevance: Optional[CandidateMemoryGoalRelevance] = None
-    importance: float = Field(default=0.5, ge=0.0, le=1.0, description="Memory importance score")
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0, description="Extraction confidence score")
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator("importance", "confidence", mode="before")
     @classmethod
-    def clamp_scores(cls, v: Any) -> float:
+    def clamp_scores(cls, value: Any) -> float:
         try:
-            val = float(v)
-            return round(max(0.0, min(1.0, val)), 3)
+            score = float(value)
+            return round(max(0.0, min(1.0, score)), 3)
         except (ValueError, TypeError):
             return 0.5
 
 
 class DataAgentOutput(BaseModel):
-    """Output envelope from Data Agent."""
+    """Legacy extraction output retained for the existing parser."""
+
     candidate_memories: List[CandidateMemory] = Field(default_factory=list)
 
 
-class PromotedMemory(BaseModel):
-    """Durable knowledge consolidated from one or more candidate memories."""
+class ExistingLongTermMemory(BaseModel):
+    """Persistent memory supplied as context for possible UPDATE actions."""
 
     id: str
     user_id: str
     content: str
-    topic: str
     evidence_ids: List[str] = Field(default_factory=list)
-    emotional_state: List[CandidateMemoryEmotion] = Field(default_factory=list)
-    contexts: List[Dict[str, Any]] = Field(default_factory=list)
-    goals: List[str] = Field(default_factory=list)
-    support_count: int = Field(default=1, ge=1)
-    importance: float = Field(ge=0.0, le=1.0)
-    confidence: float = Field(ge=0.0, le=1.0)
+    emotions: List[CandidateMemoryEmotion] = Field(default_factory=list)
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class Pattern(BaseModel):
-    """A repeated theme supported by multiple independent observations."""
+class MemoryActionType(str, Enum):
+    CREATE = "CREATE"
+    UPDATE = "UPDATE"
+    MERGE = "MERGE"
+    REJECT = "REJECT"
 
-    id: str
-    user_id: str
-    name: str
-    description: str
-    pattern_type: str
-    topic: str
+
+class RelationshipType(str, Enum):
+    INFLUENCES = "INFLUENCES"
+    ASSOCIATED_WITH = "ASSOCIATED_WITH"
+    CONTRIBUTES_TO = "CONTRIBUTES_TO"
+    TRIGGERS = "TRIGGERS"
+    RELATED_TO = "RELATED_TO"
+    SUPPORTS = "SUPPORTS"
+    CONTRADICTS = "CONTRADICTS"
+
+
+class RelationshipEntityType(str, Enum):
+    MEMORY_ACTION = "memory_action"
+    LONG_TERM_MEMORY = "long_term_memory"
+    CANDIDATE_MEMORY = "candidate_memory"
+    PATTERN = "pattern"
+    GOAL = "goal"
+
+
+class MemoryAction(BaseModel):
+    """One LLM decision about candidate evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str = Field(..., min_length=1, description="Temporary logical ID")
+    action: MemoryActionType
+    memory_id: Optional[str] = None
+    candidate_ids: List[str] = Field(default_factory=list)
     evidence_ids: List[str] = Field(default_factory=list)
-    promoted_memory_ids: List[str] = Field(default_factory=list)
-    occurrence_count: int = Field(ge=2)
-    emotional_state: List[CandidateMemoryEmotion] = Field(default_factory=list)
-    importance: float = Field(ge=0.0, le=1.0)
-    confidence: float = Field(ge=0.0, le=1.0)
+    content: Optional[str] = None
+    emotions: List[CandidateMemoryEmotion] = Field(default_factory=list)
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    reasoning: str = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def validate_action_shape(self):
+        if self.action == MemoryActionType.UPDATE and not self.memory_id:
+            raise ValueError("UPDATE requires memory_id")
+        if self.action != MemoryActionType.UPDATE and self.memory_id is not None:
+            raise ValueError("Only UPDATE may reference an existing memory_id")
+        if self.action in {
+            MemoryActionType.CREATE,
+            MemoryActionType.UPDATE,
+            MemoryActionType.MERGE,
+        } and not (self.content and self.content.strip()):
+            raise ValueError(f"{self.action.value} requires consolidated content")
+        if self.action == MemoryActionType.MERGE and len(self.candidate_ids) < 2:
+            raise ValueError("MERGE requires at least two candidate_ids")
+        return self
 
 
 class Relationship(BaseModel):
-    """A deterministic semantic relationship between consolidated entities."""
+    """Evidence-backed relationship discovered by the memory reasoning agent."""
 
-    id: str
-    user_id: str
-    source_id: str
-    source_type: str
-    relation: str
-    target_id: str
-    target_type: str
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(..., min_length=1)
+    source_type: RelationshipEntityType
+    relation: RelationshipType
+    target_id: str = Field(..., min_length=1)
+    target_type: RelationshipEntityType
     evidence_ids: List[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
 
 
 class DataAgentResult(BaseModel):
-    """Complete, side-effect-free output of Data Agent V1 consolidation."""
+    """Validated, side-effect-free output of Data Agent V1."""
 
-    promoted_memories: List[PromotedMemory] = Field(default_factory=list)
-    patterns: List[Pattern] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: Optional[str] = None
+    memory_actions: List[MemoryAction] = Field(default_factory=list)
     relationships: List[Relationship] = Field(default_factory=list)
-    rejected_memory_ids: List[str] = Field(default_factory=list)
+    reasoning_summary: str = "No candidate memories were supplied."

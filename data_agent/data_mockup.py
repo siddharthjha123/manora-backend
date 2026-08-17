@@ -792,6 +792,171 @@ def get_candidate_memories():
         if interaction["candidate_memory"] is not None
     ]
 
+def get_one_candidate_memory_models():
+    candidate = MOCK_INTERACTIONS[0]
+    raw = candidate["candidate_memory"]
+    candidates = []
+
+    from data_agent.data_schema import (
+        CandidateMemory,
+        CandidateMemoryBehavior,
+        CandidateMemoryEmotion,
+        CandidateMemoryGoalRelevance,
+    )
+
+    raw_behavior = candidate.get("behavior")
+    behavior = None
+    if raw_behavior:
+        behavior = CandidateMemoryBehavior(
+            type=raw_behavior.get("type", "observed_behavior"),
+            description=raw_behavior.get("description")
+            or raw_behavior.get("context")
+            or candidate["content"],
+        )
+        
+    goal_descriptions = []
+    if raw.get("goal"):
+        goal_descriptions.append(raw["goal"].get("description", ""))
+    for goal in raw.get("goals", []):
+        goal_descriptions.append(goal.get("description", ""))
+    goal_descriptions = [goal for goal in goal_descriptions if goal]
+
+    candidates.append(
+            CandidateMemory(
+                id=raw["memory_id"],
+                user_id=candidate["user_id"],
+                content=raw["content"],
+                context=dict(raw.get("context", {})),
+                emotional_state=[
+                    CandidateMemoryEmotion(
+                        emotion=item["emotion"],
+                        confidence=item["confidence"],
+                    )
+                    for item in raw.get("emotional_state", [])
+                ],
+                behavior=behavior,
+                goal_relevance=CandidateMemoryGoalRelevance(
+                    related=bool(goal_descriptions),
+                    goal="; ".join(goal_descriptions) if goal_descriptions else None,
+                ),
+                importance=raw.get("importance", 0.5),
+                confidence=raw.get("confidence", 0.5),
+            )
+        )
+
+    return candidates
+
+def get_three_candidate_memory_models():
+    candidate = [MOCK_INTERACTIONS[0],MOCK_INTERACTIONS[1],MOCK_INTERACTIONS[3]]
+    candidates = []
+
+    from data_agent.data_schema import (
+        CandidateMemory,
+        CandidateMemoryBehavior,
+        CandidateMemoryEmotion,
+        CandidateMemoryGoalRelevance,
+    )
+
+    for interaction in candidate:
+        raw = interaction["candidate_memory"]
+        raw_behavior = interaction.get("behavior")
+        behavior = None
+        if raw_behavior:
+            behavior = CandidateMemoryBehavior(
+                type=raw_behavior.get("type", "observed_behavior"),
+                description=raw_behavior.get("description")
+                or raw_behavior.get("context")
+                or candidate["content"],
+            )
+            
+        goal_descriptions = []
+        if raw.get("goal"):
+            goal_descriptions.append(raw["goal"].get("description", ""))
+        for goal in raw.get("goals", []):
+            goal_descriptions.append(goal.get("description", ""))
+        goal_descriptions = [goal for goal in goal_descriptions if goal]
+
+        candidates.append(
+                CandidateMemory(
+                    id=raw["memory_id"],
+                    user_id=interaction["user_id"],
+                    content=raw["content"],
+                    context=dict(raw.get("context", {})),
+                    emotional_state=[
+                        CandidateMemoryEmotion(
+                            emotion=item["emotion"],
+                            confidence=item["confidence"],
+                        )
+                        for item in raw.get("emotional_state", [])
+                    ],
+                    behavior=behavior,
+                    goal_relevance=CandidateMemoryGoalRelevance(
+                        related=bool(goal_descriptions),
+                        goal="; ".join(goal_descriptions) if goal_descriptions else None,
+                    ),
+                    importance=raw.get("importance", 0.5),
+                    confidence=raw.get("confidence", 0.5),
+                )
+            )
+
+    return candidates
+
+def get_five_candidate_memory_models():
+    candidate = [MOCK_INTERACTIONS[0],MOCK_INTERACTIONS[1],MOCK_INTERACTIONS[3],MOCK_INTERACTIONS[18],MOCK_INTERACTIONS[19]]
+    candidates = []
+
+    from data_agent.data_schema import (
+        CandidateMemory,
+        CandidateMemoryBehavior,
+        CandidateMemoryEmotion,
+        CandidateMemoryGoalRelevance,
+    )
+
+    for interaction in candidate:
+        raw = interaction["candidate_memory"]
+        raw_behavior = interaction.get("behavior")
+        behavior = None
+        if raw_behavior:
+            behavior = CandidateMemoryBehavior(
+                type=raw_behavior.get("type", "observed_behavior"),
+                description=raw_behavior.get("description")
+                or raw_behavior.get("context")
+                or candidate["content"],
+            )
+            
+        goal_descriptions = []
+        if raw.get("goal"):
+            goal_descriptions.append(raw["goal"].get("description", ""))
+        for goal in raw.get("goals", []):
+            goal_descriptions.append(goal.get("description", ""))
+        goal_descriptions = [goal for goal in goal_descriptions if goal]
+
+        candidates.append(
+                CandidateMemory(
+                    id=raw["memory_id"],
+                    user_id=interaction["user_id"],
+                    content=raw["content"],
+                    context=dict(raw.get("context", {})),
+                    emotional_state=[
+                        CandidateMemoryEmotion(
+                            emotion=item["emotion"],
+                            confidence=item["confidence"],
+                        )
+                        for item in raw.get("emotional_state", [])
+                    ],
+                    behavior=behavior,
+                    goal_relevance=CandidateMemoryGoalRelevance(
+                        related=bool(goal_descriptions),
+                        goal="; ".join(goal_descriptions) if goal_descriptions else None,
+                    ),
+                    importance=raw.get("importance", 0.5),
+                    confidence=raw.get("confidence", 0.5),
+                )
+            )
+
+    return candidates
+
+
 
 def get_candidate_memory_models():
     """Return the existing mock candidates as the production input contract.

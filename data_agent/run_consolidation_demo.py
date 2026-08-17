@@ -1,36 +1,41 @@
-"""Run Data Agent V1 against the existing 16-candidate mock dataset.
+"""Manual real-model demo for Data Agent V1; performs no persistence."""
 
-Usage from the repository root:
-    python -m data_agent.run_consolidation_demo
-"""
-
+import asyncio
 import json
 
 from data_agent.data_engine import DataAgent
-from data_agent.data_mockup import get_candidate_memory_models
+from data_agent.data_mockup import get_candidate_memory_models, get_one_candidate_memory_models, get_three_candidate_memory_models, get_five_candidate_memory_models
+from data_agent.data_schema import MemoryActionType
 
 
-def _print_section(title, items):
-    print(f"\n=== {title} ({len(items)}) ===")
-    if not items:
-        print("[]")
-        return
-    for item in items:
-        print(json.dumps(item.model_dump(), indent=2, ensure_ascii=False))
+def print_actions(result, action_type: MemoryActionType) -> None:
+    actions = [action for action in result.memory_actions if action.action == action_type]
+    print(f"\n=== {action_type.value} ({len(actions)}) ===")
+    for action in actions:
+        print(json.dumps(action.model_dump(mode="json"), indent=2, ensure_ascii=False))
 
 
-def main():
-    candidates = get_candidate_memory_models()
-    result = DataAgent().consolidate(candidates)
+async def main() -> None:
+    candidates = get_three_candidate_memory_models()
+    result = await DataAgent().consolidate(
+        candidate_memories=candidates,
+        existing_long_term_memories=[],
+        graph_context=[],
+        semantic_context=[],
+    )
 
+    print(f"Validated user: {result.user_id}")
     print(f"Loaded candidate memories: {len(candidates)}")
-    _print_section("PROMOTED MEMORIES", result.promoted_memories)
-    _print_section("PATTERNS", result.patterns)
-    _print_section("RELATIONSHIPS", result.relationships)
+    for action_type in MemoryActionType:
+        print_actions(result, action_type)
 
-    print(f"\n=== REJECTED CANDIDATES ({len(result.rejected_memory_ids)}) ===")
-    print(json.dumps(result.rejected_memory_ids, indent=2))
+    print(f"\n=== RELATIONSHIPS ({len(result.relationships)}) ===")
+    for relationship in result.relationships:
+        print(json.dumps(relationship.model_dump(mode="json"), indent=2))
+
+    print("\n=== REASONING SUMMARY ===")
+    print(result.reasoning_summary)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
