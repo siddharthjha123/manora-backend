@@ -793,6 +793,69 @@ def get_candidate_memories():
     ]
 
 
+def get_candidate_memory_models():
+    """Return the existing mock candidates as the production input contract.
+
+    The mock fixture predates ``CandidateMemory`` and intentionally retains its
+    original dictionary shape.  This adapter only translates those existing 16
+    records; it does not add or invent any observations.
+    """
+    from data_agent.data_schema import (
+        CandidateMemory,
+        CandidateMemoryBehavior,
+        CandidateMemoryEmotion,
+        CandidateMemoryGoalRelevance,
+    )
+
+    candidates = []
+    for interaction in MOCK_INTERACTIONS:
+        raw = interaction["candidate_memory"]
+        if raw is None:
+            continue
+
+        raw_behavior = raw.get("behavior")
+        behavior = None
+        if raw_behavior:
+            behavior = CandidateMemoryBehavior(
+                type=raw_behavior.get("type", "observed_behavior"),
+                description=raw_behavior.get("description")
+                or raw_behavior.get("context")
+                or raw["content"],
+            )
+
+        goal_descriptions = []
+        if raw.get("goal"):
+            goal_descriptions.append(raw["goal"].get("description", ""))
+        for goal in raw.get("goals", []):
+            goal_descriptions.append(goal.get("description", ""))
+        goal_descriptions = [goal for goal in goal_descriptions if goal]
+
+        candidates.append(
+            CandidateMemory(
+                id=raw["memory_id"],
+                user_id=interaction["user_id"],
+                content=raw["content"],
+                context=dict(raw.get("context", {})),
+                emotional_state=[
+                    CandidateMemoryEmotion(
+                        emotion=item["emotion"],
+                        confidence=item["confidence"],
+                    )
+                    for item in raw.get("emotional_state", [])
+                ],
+                behavior=behavior,
+                goal_relevance=CandidateMemoryGoalRelevance(
+                    related=bool(goal_descriptions),
+                    goal="; ".join(goal_descriptions) if goal_descriptions else None,
+                ),
+                importance=raw.get("importance", 0.5),
+                confidence=raw.get("confidence", 0.5),
+            )
+        )
+
+    return candidates
+
+
 def get_non_memory_interactions():
     """Return interactions that should not become memories."""
     return [

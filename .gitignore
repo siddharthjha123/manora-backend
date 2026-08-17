@@ -72,3 +72,11 @@ Thumbs.db
 # =========================
 
 .ipynb_checkpoints/
+
+# =========================
+# Explanation scripts
+# =========================
+
+BUILD_DOCUMENTATION.md
+explanation.md
+Manora_Research_Report.md
