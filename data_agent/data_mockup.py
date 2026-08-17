@@ -10,8 +10,8 @@ Student profile:
     frequently experiences loneliness.
 
 Dataset:
-    20 interactions
-    16 candidate memories
+    22 interactions
+    18 candidate memories
     4 interactions intentionally have no candidate memory
 
 Important:
@@ -771,7 +771,61 @@ MOCK_INTERACTIONS = [
             "importance": 0.98,
             "confidence": 0.96
         }
-    }
+    },
+
+
+    # =========================================================
+    # INTERACTION 21
+    # Candidate memory: YES
+    # =========================================================
+
+    {
+        "interaction_id": "int_021",
+        "user_id": "user_001",
+        "session_id": "session_001",
+        "role": "user",
+        "raw_text": "I don't know how to make close friends anymore.",
+        "candidate_memory": {
+            "memory_id": "cm_021",
+            "content": "I don't know how to make close friends anymore.",
+            "emotional_state": [
+                {
+                    "emotion": "loneliness",
+                    "confidence": 0.91
+                }
+            ],
+            "importance": 0.82,
+            "confidence": 0.89
+        }
+    },
+
+
+    # =========================================================
+    # INTERACTION 22
+    # Candidate memory: YES
+    # =========================================================
+
+    {
+        "interaction_id": "int_022",
+        "user_id": "user_001",
+        "session_id": "session_001",
+        "role": "user",
+        "raw_text": "I really want someone I can genuinely talk to.",
+        "candidate_memory": {
+            "memory_id": "cm_022",
+            "content": "I really want someone I can genuinely talk to.",
+            "emotional_state": [
+                {
+                    "emotion": "loneliness",
+                    "confidence": 0.86
+                }
+            ],
+            "importance": 0.84,
+            "confidence": 0.88
+        }
+    },
+
+
 ]
 
 
@@ -846,6 +900,62 @@ def get_one_candidate_memory_models():
 
     return candidates
 
+def get_two_candidate_memory_models():
+    selected_interactions = [MOCK_INTERACTIONS[20], MOCK_INTERACTIONS[21]]
+
+    candidates = []
+
+    from data_agent.data_schema import (
+        CandidateMemory,
+        CandidateMemoryBehavior,
+        CandidateMemoryEmotion,
+        CandidateMemoryGoalRelevance,
+    )
+
+    for interaction in selected_interactions:
+        raw = interaction["candidate_memory"]
+        raw_behavior = raw.get("behavior")
+        behavior = None
+        if raw_behavior:
+            behavior = CandidateMemoryBehavior(
+                type=raw_behavior.get("type", "observed_behavior"),
+                description=raw_behavior.get("description")
+                or raw_behavior.get("context")
+                or raw["content"],
+            )
+
+        goal_descriptions = []
+        if raw.get("goal"):
+            goal_descriptions.append(raw["goal"].get("description", ""))
+        for goal in raw.get("goals", []):
+            goal_descriptions.append(goal.get("description", ""))
+        goal_descriptions = [goal for goal in goal_descriptions if goal]
+
+        candidates.append(
+                CandidateMemory(
+                    id=raw["memory_id"],
+                    user_id=interaction["user_id"],
+                    content=raw["content"],
+                    context=dict(raw.get("context", {})),
+                    emotional_state=[
+                        CandidateMemoryEmotion(
+                            emotion=item["emotion"],
+                            confidence=item["confidence"],
+                        )
+                        for item in raw.get("emotional_state", [])
+                    ],
+                    behavior=behavior,
+                    goal_relevance=CandidateMemoryGoalRelevance(
+                        related=bool(goal_descriptions),
+                        goal="; ".join(goal_descriptions) if goal_descriptions else None,
+                    ),
+                    importance=raw.get("importance", 0.5),
+                    confidence=raw.get("confidence", 0.5),
+                )
+            )
+
+    return candidates
+
 def get_three_candidate_memory_models():
     candidate = [MOCK_INTERACTIONS[0],MOCK_INTERACTIONS[1],MOCK_INTERACTIONS[3]]
     candidates = []
@@ -902,7 +1012,7 @@ def get_three_candidate_memory_models():
     return candidates
 
 def get_five_candidate_memory_models():
-    candidate = [MOCK_INTERACTIONS[0],MOCK_INTERACTIONS[1],MOCK_INTERACTIONS[3],MOCK_INTERACTIONS[18],MOCK_INTERACTIONS[19]]
+    candidate = [MOCK_INTERACTIONS[3],MOCK_INTERACTIONS[4],MOCK_INTERACTIONS[7],MOCK_INTERACTIONS[9],MOCK_INTERACTIONS[12]]
     candidates = []
 
     from data_agent.data_schema import (

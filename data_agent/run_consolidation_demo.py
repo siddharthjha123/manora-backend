@@ -4,8 +4,8 @@ import asyncio
 import json
 
 from data_agent.data_engine import DataAgent
-from data_agent.data_mockup import get_candidate_memory_models, get_one_candidate_memory_models, get_three_candidate_memory_models, get_five_candidate_memory_models
-from data_agent.data_schema import MemoryActionType
+from data_agent.data_mockup import get_two_candidate_memory_models
+from data_agent.data_schema import ExistingLongTermMemory, MemoryActionType
 
 
 def print_actions(result, action_type: MemoryActionType) -> None:
@@ -16,10 +16,32 @@ def print_actions(result, action_type: MemoryActionType) -> None:
 
 
 async def main() -> None:
-    candidates = get_three_candidate_memory_models()
+    candidates = get_two_candidate_memory_models()
+
+    existing_memory_single = ExistingLongTermMemory(
+        id="mem_001",
+        user_id="user_001",
+        content=(
+            "Student experiences loneliness and difficulty forming close "
+            "relationships at college."
+        ),
+        emotions=[
+            {
+                "emotion": "loneliness",
+                "confidence": 0.90
+            }
+        ],
+        importance=0.88,
+        confidence=0.90,
+        evidence_ids=[
+            "cm_old_001",
+            "cm_old_002"
+        ],
+    )
+
     result = await DataAgent().consolidate(
         candidate_memories=candidates,
-        existing_long_term_memories=[],
+        existing_long_term_memories=[existing_memory_single],
         graph_context=[],
         semantic_context=[],
     )

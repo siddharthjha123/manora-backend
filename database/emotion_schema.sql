@@ -139,3 +139,39 @@ CREATE INDEX IF NOT EXISTS idx_candidate_memories_status ON candidate_memories(s
 CREATE INDEX IF NOT EXISTS idx_candidate_memories_interaction_id ON candidate_memories(interaction_id);
 CREATE INDEX IF NOT EXISTS idx_buddy_states_user_id ON buddy_states(user_id);
 CREATE INDEX IF NOT EXISTS idx_buddy_state_history_user_id ON buddy_state_history(user_id);
+
+-- ------------------------------------------------------------
+-- 9. LONG TERM MEMORIES
+-- Stores long term memories.
+-- ------------------------------------------------------------
+
+
+CREATE TABLE long_term_memories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
+
+    content TEXT NOT NULL,
+
+    importance REAL NOT NULL DEFAULT 0.5
+        CHECK (importance >= 0 AND importance <= 1),
+
+    confidence REAL NOT NULL DEFAULT 0.5
+        CHECK (confidence >= 0 AND confidence <= 1),
+
+    emotions JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+    evidence_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    is_active BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX idx_long_term_memories_user_id
+    ON long_term_memories(user_id);
+
+CREATE INDEX idx_long_term_memories_active
+    ON long_term_memories(user_id, is_active);
