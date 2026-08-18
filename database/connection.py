@@ -474,6 +474,309 @@ class DatabaseManager:
         _in_memory_db["goals"][goal_id] = record
         return record
 
+    # ---------------------------------------------------------------------
+    # CRUD OPERATIONS AFTER DATA AGENT RESULT
+    # ---------------------------------------------------------------------
+
+    async def create_long_term_memory(
+        self,
+        user_id: str,
+        content: str,
+        importance: float,
+        confidence: float,
+        emotions: List[Dict[str, Any]],
+        evidence_ids: List[str],
+    ) -> Dict[str, Any]:
+        """Creates a new consolidated long-term memory."""
+
+        memory_id = str(uuid.uuid4())
+        user_id = str(user_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        record = {
+            "id": memory_id,
+            "user_id": user_id,
+            "content": content,
+            "importance": float(importance),
+            "confidence": float(confidence),
+            "emotions": emotions,
+            "evidence_ids": evidence_ids,
+            "created_at": now,
+            "updated_at": now,
+            "is_active": True,
+        }
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO long_term_memories (
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        )
+                        VALUES (
+                            $1::uuid,
+                            $2::uuid,
+                            $3,
+                            $4,
+                            $5,
+                            $6::jsonb,
+                            $7::jsonb,
+                            $8::timestamptz,
+                            $9::timestamptz,
+                            $10
+                        )
+                        RETURNING
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        """,
+                        uuid.UUID(memory_id),
+                        uuid.UUID(user_id),
+                        content,
+                        float(importance),
+                        float(confidence),
+                        json.dumps(emotions),
+                        json.dumps(evidence_ids),
+                        now,
+                        now,
+                        True,
+                    )
+
+                    if row:
+                        return dict(row)
+
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL create_long_term_memory error: {e}. "
+                    "Falling back to in-memory."
+                )
+
+        _in_memory_db.setdefault("long_term_memories", {})
+        _in_memory_db["long_term_memories"][memory_id] = record
+
+        return record
+
+    async def get_long_term_memory(
+        self,
+        memory_id: str,
+        user_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieves one active long-term memory for a student."""
+
+        memory_id = str(memory_id)
+        user_id = str(user_id)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        FROM long_term_memories
+                        WHERE id = $1::uuid
+                          AND user_id = $2::uuid
+                          AND is_active = TRUE
+                        """,
+                        uuid.UUID(memory_id),
+                        uuid.UUID(user_id),
+                    )
+
+                    if row:
+                        return dict(row)
+
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL get_long_term_memory error: {e}. "
+                    "Falling back to in-memory."
+                )
+
+        memory = _in_memory_db.get(
+            "long_term_memories",
+            {}
+        ).get(memory_id)
+
+        if memory and memory["user_id"] == user_id and memory["is_active"]:
+            return memory
+
+        return None
+
+    async def get_long_term_memories(
+        self,
+        user_id: str,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Retrieves active long-term memories for a student."""
+
+        user_id = str(user_id)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        FROM long_term_memories
+                        WHERE user_id = $1::uuid
+                          AND is_active = TRUE
+                        ORDER BY updated_at DESC
+                        LIMIT $2
+                        """,
+                        uuid.UUID(user_id),
+                        limit,
+                    )
+
+                    return [dict(row) for row in rows]
+
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL get_long_term_memories error: {e}. "
+                    "Falling back to in-memory."
+                )
+
+        memories = [
+            memory
+            for memory in _in_memory_db.get(
+                "long_term_memories",
+                {}
+            ).values()
+            if memory["user_id"] == user_id
+            and memory["is_active"]
+        ]
+
+        memories.sort(
+            key=lambda memory: memory["updated_at"],
+            reverse=True,
+        )
+
+        return memories[:limit]
+
+    async def update_long_term_memory(
+        self,
+        memory_id: str,
+        user_id: str,
+        content: str,
+        importance: float,
+        confidence: float,
+        emotions: List[Dict[str, Any]],
+        evidence_ids: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Updates an existing consolidated long-term memory."""
+
+        memory_id = str(memory_id)
+        user_id = str(user_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        UPDATE long_term_memories
+                        SET
+                            content = $1,
+                            importance = $2,
+                            confidence = $3,
+                            emotions = $4::jsonb,
+                            evidence_ids = $5::jsonb,
+                            updated_at = $6::timestamptz
+                        WHERE id = $7::uuid
+                          AND user_id = $8::uuid
+                          AND is_active = TRUE
+                        RETURNING
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        """,
+                        content,
+                        float(importance),
+                        float(confidence),
+                        json.dumps(emotions),
+                        json.dumps(evidence_ids),
+                        now,
+                        uuid.UUID(memory_id),
+                        uuid.UUID(user_id),
+                    )
+
+                    if row:
+                        return dict(row)
+
+                    return None
+
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL update_long_term_memory error: {e}. "
+                    "Falling back to in-memory."
+                )
+
+        memories = _in_memory_db.setdefault(
+            "long_term_memories",
+            {},
+        )
+
+        memory = memories.get(memory_id)
+
+        if not memory:
+            return None
+
+        if memory["user_id"] != user_id:
+            return None
+
+        if not memory["is_active"]:
+            return None
+
+        memory["content"] = content
+        memory["importance"] = float(importance)
+        memory["confidence"] = float(confidence)
+        memory["emotions"] = emotions
+        memory["evidence_ids"] = evidence_ids
+        memory["updated_at"] = now
+
+        return memory
+
 
 # Global singleton instance
 db = DatabaseManager()
