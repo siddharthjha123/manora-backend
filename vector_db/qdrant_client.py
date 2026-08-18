@@ -37,7 +37,7 @@ def _generate_fallback_embedding(text: str, dim: int = 128) -> List[float]:
 class QdrantAdapter:
     """Adapter for Qdrant Vector Database semantic memory store."""
 
-    COLLECTION_NAME = "student_memories"
+    COLLECTION_NAME = "long_term_memories"
     VECTOR_DIM = 128
 
     def __init__(self):
@@ -68,7 +68,11 @@ class QdrantAdapter:
         if not self.client:
             return
         try:
-            from qdrant_client.http.models import Distance, VectorParams
+            from qdrant_client.http.models import (
+                Distance,
+                PayloadSchemaType,
+                VectorParams,
+            )
             collections = self.client.get_collections().collections
             names = [c.name for c in collections]
             if self.COLLECTION_NAME not in names:
@@ -77,6 +81,27 @@ class QdrantAdapter:
                     vectors_config=VectorParams(size=self.VECTOR_DIM, distance=Distance.COSINE),
                 )
                 logger.info(f"Created Qdrant collection '{self.COLLECTION_NAME}'.")
+
+            collection_info = self.client.get_collection(self.COLLECTION_NAME)
+            payload_schema = collection_info.payload_schema or {}
+            required_indexes = {
+                "user_id": PayloadSchemaType.KEYWORD,
+                "is_active": PayloadSchemaType.BOOL,
+            }
+
+            for field_name, field_schema in required_indexes.items():
+                if field_name not in payload_schema:
+                    self.client.create_payload_index(
+                        collection_name=self.COLLECTION_NAME,
+                        field_name=field_name,
+                        field_schema=field_schema,
+                        wait=True,
+                    )
+                    logger.info(
+                        "Created Qdrant payload index '%s' on collection '%s'.",
+                        field_name,
+                        self.COLLECTION_NAME,
+                    )
         except Exception as e:
             logger.warning(f"Error ensuring Qdrant collection ({e}).")
 
@@ -84,6 +109,10 @@ class QdrantAdapter:
         """Generates embedding vector for memory text."""
         return _generate_fallback_embedding(text, self.VECTOR_DIM)
 
+
+    # ---------------------------------------------------------
+    # Method which will store a single long term memory withe metadata 
+    # ---------------------------------------------------------
     def upsert_memory(
         self,
         memory_id: str,
@@ -92,38 +121,177 @@ class QdrantAdapter:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
-        Embeds and stores a candidate memory in Qdrant vector store.
+        Embeds and stores one long-term memory in Qdrant.
+
+        The memory_id should match the ID of the corresponding
+        long-term memory stored in PostgreSQL.
         """
+
+        memory_id = str(memory_id)
+        user_id = str(user_id)
+
         vector = self._get_embedding(text)
+
         payload = {
-            "memory_id": str(memory_id),
-            "user_id": str(user_id),
+            "memory_id": memory_id,
+            "user_id": user_id,
             "text": text,
             **(metadata or {}),
         }
 
-        # If live Qdrant is connected
+        # ---------------------------------------------------------
+        # Live Qdrant
+        # ---------------------------------------------------------
         if self.client:
             try:
                 from qdrant_client.http.models import PointStruct
-                # Qdrant accepts integer or UUID point IDs
+
                 self.client.upsert(
                     collection_name=self.COLLECTION_NAME,
-                    points=[PointStruct(id=str(memory_id), vector=vector, payload=payload)],
+                    points=[
+                        PointStruct(
+                            id=memory_id,
+                            vector=vector,
+                            payload=payload,
+                        )
+                    ],
                 )
-                logger.debug(f"Upserted memory {memory_id} to Qdrant.")
-                return True
-            except Exception as e:
-                logger.error(f"Qdrant upsert error: {e}. Falling back to in-memory vector storage.")
 
-        # In-memory store fallback
-        self._in_memory_vectors[str(memory_id)] = {
-            "id": str(memory_id),
+                logger.info(
+                    f"Upserted long-term memory {memory_id} to Qdrant."
+                )
+
+                return True
+
+            except Exception as e:
+                logger.error(
+                    f"Qdrant long-term memory upsert error: {e}. "
+                    "Falling back to in-memory vector storage."
+                )
+
+        # ---------------------------------------------------------
+        # In-memory fallback
+        # ---------------------------------------------------------
+        self._in_memory_vectors[memory_id] = {
+            "id": memory_id,
             "vector": vector,
             "payload": payload,
-            "user_id": str(user_id),
+            "user_id": user_id,
         }
+
         return True
+
+    # ------------------------------------------------------
+    # Method which will search for long term memories
+    # reminder: to delete the existing search_memories() method
+    # ------------------------------------------------------
+
+    def search_long_term_memories(
+        self,
+        user_id: str,
+        query_text: str,
+        limit: int = 5,
+        score_threshold: float = 0.2,
+    ) -> List[Dict[str, Any]]:
+        """
+        Searches for long-term memories that are semantically
+        similar to the supplied query text.
+
+        Only memories belonging to the specified user are returned.
+        """
+
+        user_id = str(user_id)
+        query_vector = self._get_embedding(query_text)
+
+        # ---------------------------------------------------------
+        # Live Qdrant
+        # ---------------------------------------------------------
+        if self.client:
+            try:
+                from qdrant_client.http.models import (
+                    FieldCondition,
+                    Filter,
+                    MatchValue,
+                )
+
+                search_filter = Filter(
+                    must=[
+                        FieldCondition(
+                            key="user_id",
+                            match=MatchValue(value=user_id),
+                        ),
+                        FieldCondition(
+                            key="is_active",
+                            match=MatchValue(value=True),
+                        ),
+                    ]
+                )
+
+                results = self.client.query_points(
+                    collection_name=self.COLLECTION_NAME,
+                    query=query_vector,
+                    query_filter=search_filter,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                ).points
+
+                return [
+                    {
+                        "memory_id": hit.payload.get("memory_id"),
+                        "text": hit.payload.get("text"),
+                        "score": round(hit.score, 3),
+                        "metadata": hit.payload,
+                    }
+                    for hit in results
+                ]
+
+            except Exception as e:
+                logger.error(
+                    f"Qdrant long-term memory search error: {e}. "
+                    "Falling back to in-memory cosine search."
+                )
+
+        # ---------------------------------------------------------
+        # In-memory fallback
+        # ---------------------------------------------------------
+        results = []
+
+        for memory_id, data in self._in_memory_vectors.items():
+
+            # Never return another student's memory.
+            if data["user_id"] != user_id:
+                continue
+
+            # Ignore inactive memories.
+            if not data["payload"].get("is_active", True):
+                continue
+
+            vector = data["vector"]
+
+            # Vectors are normalized, so dot product represents
+            # cosine similarity.
+            similarity = sum(
+                a * b
+                for a, b in zip(query_vector, vector)
+            )
+
+            if similarity >= score_threshold:
+                results.append(
+                    {
+                        "memory_id": memory_id,
+                        "text": data["payload"].get("text", ""),
+                        "score": round(similarity, 3),
+                        "metadata": data["payload"],
+                    }
+                )
+
+        results.sort(
+            key=lambda item: item["score"],
+            reverse=True,
+        )
+
+        return results[:limit]
+
 
     def search_memories(
         self,

@@ -6,7 +6,8 @@ import json
 from data_agent.data_engine import DataAgent
 from data_agent.data_mockup import get_two_candidate_memory_models
 from data_agent.data_schema import ExistingLongTermMemory, MemoryActionType
-
+from memory.memory_engine import MemoryEngine 
+from database.connection import db
 
 def print_actions(result, action_type: MemoryActionType) -> None:
     actions = [action for action in result.memory_actions if action.action == action_type]
@@ -16,47 +17,27 @@ def print_actions(result, action_type: MemoryActionType) -> None:
 
 
 async def main() -> None:
-    candidates = get_two_candidate_memory_models()
+    await db.initialize()
 
-    existing_memory_single = ExistingLongTermMemory(
-        id="mem_001",
-        user_id="user_001",
-        content=(
-            "Student experiences loneliness and difficulty forming close "
-            "relationships at college."
-        ),
-        emotions=[
-            {
-                "emotion": "loneliness",
-                "confidence": 0.90
-            }
-        ],
-        importance=0.88,
-        confidence=0.90,
-        evidence_ids=[
-            "cm_old_001",
-            "cm_old_002"
-        ],
-    )
+    print("PostgreSQL connected:", db.is_postgres_connected)
 
-    result = await DataAgent().consolidate(
-        candidate_memories=candidates,
-        existing_long_term_memories=[existing_memory_single],
-        graph_context=[],
-        semantic_context=[],
-    )
+    try:
 
-    print(f"Validated user: {result.user_id}")
-    print(f"Loaded candidate memories: {len(candidates)}")
-    for action_type in MemoryActionType:
-        print_actions(result, action_type)
+        candidates = get_two_candidate_memory_models()
 
-    print(f"\n=== RELATIONSHIPS ({len(result.relationships)}) ===")
-    for relationship in result.relationships:
-        print(json.dumps(relationship.model_dump(mode="json"), indent=2))
+        result = await DataAgent().consolidate(
+            candidate_memories=candidates,
+            existing_long_term_memories=[],
+            graph_context=[],
+            semantic_context=[],
+        )
+        
+        persisted_memories = await MemoryEngine().persist_memory_candidates(result)
 
-    print("\n=== REASONING SUMMARY ===")
-    print(result.reasoning_summary)
+        print("---------Persisted Memories---------")
+        print(persisted_memories)
+    finally:
+        await db.close()
 
 
 if __name__ == "__main__":

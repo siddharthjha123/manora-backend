@@ -9,7 +9,7 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional
 
-from data_agent.data_schema import CandidateMemory
+from data_agent.data_schema import CandidateMemory, DataAgentResult, MemoryActionType
 from database.connection import db
 from graph_db.neo4j_client import Neo4jAdapter, neo4j_adapter
 from vector_db.qdrant_client import QdrantAdapter, qdrant_adapter
@@ -206,6 +206,150 @@ class MemoryEngine:
 
         logger.info(f"Processed {len(persisted)} candidate memories for interaction {interaction_id}")
         return persisted
+
+    # --------------------------------------------------------------------
+    # Beyond the above code is the actual data agent code 
+    # --------------------------------------------------------------------
+    async def persist_memory_candidates(self, result:DataAgentResult) -> List[Dict[str, Any]]:
+        """
+        Persist the long-term memory actions produced by the Data Agent.
+
+        The Data Agent decides what should happen:
+            CREATE  -> create a new long-term memory
+            UPDATE  -> update an existing long-term memory
+            MERGE   -> create one new consolidated memory
+            REJECT  -> do nothing
+
+        This method only executes those decisions in PostgreSQL.
+        It strictly does not perform any kind of reasoning.
+        """
+
+        if not result.memory_actions:
+            logger.info("No memory actions to persist")
+            return []
+
+        if not result.user_id:
+            raise ValueError("DataAgentResult.user_id is required for persistence")
+
+        persisted_memories: List[Dict[str, Any]] = []
+
+        for action in result.memory_actions:
+            try:
+                # -------------------------------------------------
+                # REJECT
+                # -------------------------------------------------
+                if action.action == MemoryActionType.REJECT:
+                    logger.info(
+                        "Rejected memory action %s: %s",
+                        action.action_id,
+                        action.reasoning,
+                    )
+                    continue
+
+                # CREATE and MERGE both create a new consolidated memory.
+                if action.action in {
+                    MemoryActionType.CREATE,
+                    MemoryActionType.MERGE,
+                }:
+                    memory = await db.create_long_term_memory(
+                        user_id=result.user_id,
+                        content=action.content,
+                        importance=action.importance,
+                        confidence=action.confidence,
+                        emotions=[
+                            emotion.model_dump()
+                            for emotion in action.emotions
+                        ],
+                        evidence_ids=action.evidence_ids,
+                    )
+
+                    persisted_memories.append(
+                        {
+                            "action_id": action.action_id,
+                            "action": action.action.value,
+                            "memory": memory,
+                        }
+                    )
+
+                    logger.info(
+                        "%s action %s persisted as new long-term memory %s",
+                        action.action.value,
+                        action.action_id,
+                        memory.get("id") if memory else None,
+                    )
+
+                    continue
+
+                # -------------------------------------------------
+                # UPDATE
+                # -------------------------------------------------
+                if action.action == MemoryActionType.UPDATE:
+                    memory = await db.update_long_term_memory(
+                        memory_id=action.memory_id,
+                        user_id=result.user_id,
+                        content=action.content,
+                        importance=action.importance,
+                        confidence=action.confidence,
+                        emotions=[
+                            emotion.model_dump()
+                            for emotion in action.emotions
+                        ],
+                        evidence_ids=action.evidence_ids,
+                    )
+
+                    if memory is None:
+                        logger.warning(
+                            "UPDATE action %s could not find memory %s",
+                            action.action_id,
+                            action.memory_id,
+                        )
+
+                        persisted_memories.append(
+                            {
+                                "action_id": action.action_id,
+                                "action": action.action.value,
+                                "memory": None,
+                                "status": "memory_not_found",
+                            }
+                        )
+
+                        continue
+
+                    persisted_memories.append(
+                        {
+                            "action_id": action.action_id,
+                            "action": action.action.value,
+                            "memory": memory,
+                        }
+                    )
+
+                    logger.info(
+                        "UPDATE action %s persisted for memory %s",
+                        action.action_id,
+                        action.memory_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to persist memory action %s",
+                    action.action_id,
+                )
+
+                persisted_memories.append(
+                    {
+                        "action_id": action.action_id,
+                        "action": action.action.value,
+                        "memory": None,
+                        "status": "persistence_failed",
+                    }
+                )
+
+        logger.info(
+            "Persisted %d/%d Data Agent memory actions.",
+            len(persisted_memories),
+            len(result.memory_actions),
+        )
+
+        return persisted_memories
 
 
 # Global singleton instance

@@ -692,7 +692,7 @@ MOCK_INTERACTIONS = [
 
     {
         "interaction_id": "int_019",
-        "user_id": "user_001",
+        "user_id": "550e8400-e29b-41d4-a716-446655440000",
         "session_id": "session_001",
         "role": "user",
         "raw_text": (
@@ -780,9 +780,9 @@ MOCK_INTERACTIONS = [
     # =========================================================
 
     {
-        "interaction_id": "int_021",
-        "user_id": "user_001",
-        "session_id": "session_001",
+        "interaction_id": "321e8400-e29b-41d4-a716-446655440000",
+        "user_id": "550e8400-e29b-41d4-a716-446655440000",
+        "session_id": "790e8400-e29b-41d4-a716-446655440000",
         "role": "user",
         "raw_text": "I don't know how to make close friends anymore.",
         "candidate_memory": {
@@ -806,9 +806,9 @@ MOCK_INTERACTIONS = [
     # =========================================================
 
     {
-        "interaction_id": "int_022",
-        "user_id": "user_001",
-        "session_id": "session_001",
+        "interaction_id": "320e8400-e29b-41d4-a716-446655440000",
+        "user_id": "550e8400-e29b-41d4-a716-446655440000",
+        "session_id": "790e8400-e29b-41d4-a716-446655440000",
         "role": "user",
         "raw_text": "I really want someone I can genuinely talk to.",
         "candidate_memory": {
