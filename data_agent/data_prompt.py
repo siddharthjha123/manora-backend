@@ -3,7 +3,11 @@
 import json
 from typing import Any, Dict, List
 
-from data_agent.data_schema import DataAgentResult
+from data_agent.data_schema import (
+    DataAgentResult,
+    Stage1ConsolidationResult,
+    Stage2MemoryDecisionResult,
+)
 
 
 SYSTEM_PROMPT = """
@@ -144,4 +148,91 @@ def build_data_agent_messages(
                 "DataAgentResult JSON:\n" + json.dumps(payload, ensure_ascii=False)
             ),
         },
+    ]
+
+
+STAGE_1_SYSTEM_PROMPT = """
+You are Stage 1 of Manora's Data Agent.
+
+Your only task is to consolidate candidate memories belonging to one student.
+Identify candidates describing the same underlying fact or pattern, combine
+related candidates, avoid duplication, preserve important distinct information,
+and reject observations that are clearly unsuitable for long-term memory.
+
+Rules:
+- Produce concise consolidated memory content.
+- Do not invent facts, candidate IDs, or evidence IDs.
+- Every candidate ID must appear exactly once: in one consolidated memory or in
+  rejected_candidate_ids.
+- Each consolidated memory must preserve its candidate IDs in evidence_ids.
+- Preserve relevant emotions, importance, and confidence.
+- Relationships may only connect consolidation_id values created in this result.
+- Do not inspect existing long-term memories.
+- Do not make CREATE, UPDATE, or persistence decisions.
+- Do not diagnose the student or reveal hidden chain-of-thought.
+- Return only JSON matching the supplied Stage1ConsolidationResult schema.
+""".strip()
+
+
+STAGE_2_SYSTEM_PROMPT = """
+You are Stage 2 of Manora's Data Agent.
+
+Given one consolidated memory and only the relevant existing long-term memories
+retrieved from Qdrant, choose exactly one action:
+
+- CREATE: the consolidated memory is useful new long-term knowledge.
+- UPDATE: it represents the same underlying long-term fact as one retrieved
+  memory and should meaningfully update that memory.
+- REJECT: it should not be persisted.
+
+Rules:
+- Qdrant similarity is retrieval context, not the decision itself.
+- Never use MERGE in Stage 2.
+- UPDATE must use the exact ID of one supplied existing memory.
+- CREATE and REJECT must use null memory_id.
+- CREATE and UPDATE require resulting content; REJECT content must be null.
+- Preserve the consolidated candidate IDs and evidence IDs.
+- UPDATE evidence may also include evidence IDs from its selected existing memory.
+- Do not invent facts, IDs, or evidence.
+- Never mix users and never diagnose the student.
+- Keep reasoning concise and do not reveal hidden chain-of-thought.
+- Return only JSON matching the supplied Stage2MemoryDecisionResult schema.
+""".strip()
+
+
+def build_stage1_messages(
+    *,
+    user_id: str,
+    candidate_memories: List[Dict[str, Any]],
+) -> List[Dict[str, str]]:
+    """Build the candidate-only request used by Stage 1."""
+
+    payload = {
+        "user_id": user_id,
+        "candidate_memories": candidate_memories,
+        "response_schema": Stage1ConsolidationResult.model_json_schema(),
+    }
+    return [
+        {"role": "system", "content": STAGE_1_SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+def build_stage2_messages(
+    *,
+    user_id: str,
+    consolidated_memory: Dict[str, Any],
+    existing_long_term_memories: List[Dict[str, Any]],
+) -> List[Dict[str, str]]:
+    """Build one decision request using only Qdrant-retrieved memories."""
+
+    payload = {
+        "user_id": user_id,
+        "consolidated_memory": consolidated_memory,
+        "existing_long_term_memories": existing_long_term_memories,
+        "response_schema": Stage2MemoryDecisionResult.model_json_schema(),
+    }
+    return [
+        {"role": "system", "content": STAGE_2_SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
     ]

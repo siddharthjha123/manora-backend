@@ -4,10 +4,12 @@ Represents relationships between Students, Goals, Memories, Emotions, Behaviors,
 Supports graceful offline operation when Neo4j is disabled.
 """
 
+import datetime
 import logging
 from typing import Any, Dict, List, Optional
 
 from config.settings import get_settings
+from data_agent.data_schema import RelationshipType
 
 logger = logging.getLogger("manora.graph_db")
 
@@ -15,11 +17,18 @@ logger = logging.getLogger("manora.graph_db")
 class Neo4jAdapter:
     """Adapter for Neo4j Knowledge Graph storing mental health context and relationships."""
 
+    ALLOWED_MEMORY_RELATIONSHIPS = {relation.value for relation in RelationshipType}
+
     def __init__(self):
         self.settings = get_settings()
         self.enabled = self.settings.NEO4J_ENABLED
         self._driver = None
         self._in_memory_graph: Dict[str, Dict[str, Any]] = {}
+        self._in_memory_memories: Dict[str, Dict[str, Any]] = {}
+        self._in_memory_student_memories: Dict[str, set[str]] = {}
+        self._in_memory_relationships: Dict[
+            tuple[str, str, str], Dict[str, Any]
+        ] = {}
 
         if self.enabled:
             self._connect()
@@ -42,6 +51,257 @@ class Neo4jAdapter:
         if self._driver:
             self._driver.close()
             self._driver = None
+
+    def upsert_memory_node(
+        self,
+        memory_id: str,
+        user_id: str,
+        content: str,
+        importance: float,
+        confidence: float,
+    ) -> bool:
+        """Create or update one long-term Memory node using its PostgreSQL ID."""
+
+        memory_id = str(memory_id)
+        user_id = str(user_id)
+        params = {
+            "memory_id": memory_id,
+            "user_id": user_id,
+            "content": content,
+            "importance": float(importance),
+            "confidence": float(confidence),
+        }
+
+        if self._driver:
+            cypher = """
+            MERGE (m:Memory {id: $memory_id})
+            ON CREATE SET m.created_at = datetime(),
+                          m.user_id = $user_id
+            WITH m
+            WHERE m.user_id = $user_id
+            SET m.user_id = $user_id,
+                m.content = $content,
+                m.importance = $importance,
+                m.confidence = $confidence,
+                m.updated_at = datetime()
+            RETURN count(m) AS memory_count
+            """
+            try:
+                with self._driver.session() as session:
+                    record = session.run(cypher, **params).single()
+                return bool(record and record["memory_count"])
+            except Exception as e:
+                logger.error(
+                    "Neo4j memory upsert error: %s. Falling back to in-memory graph.",
+                    e,
+                )
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        existing = self._in_memory_memories.get(memory_id, {})
+        if existing and existing.get("user_id") != user_id:
+            logger.warning("Refused to transfer a Memory node between users")
+            return False
+        self._in_memory_memories[memory_id] = {
+            "id": memory_id,
+            "user_id": user_id,
+            "content": content,
+            "importance": float(importance),
+            "confidence": float(confidence),
+            "created_at": existing.get("created_at", now),
+            "updated_at": now,
+        }
+        return True
+
+    def link_student_memory(self, user_id: str, memory_id: str) -> bool:
+        """Idempotently connect a Student to a long-term Memory node."""
+
+        user_id = str(user_id)
+        memory_id = str(memory_id)
+
+        if self._driver:
+            cypher = """
+            MERGE (s:Student {id: $user_id})
+            WITH s
+            MATCH (m:Memory {id: $memory_id, user_id: $user_id})
+            MERGE (s)-[:HAS_MEMORY]->(m)
+            RETURN count(m) AS memory_count
+            """
+            try:
+                with self._driver.session() as session:
+                    record = session.run(
+                        cypher,
+                        user_id=user_id,
+                        memory_id=memory_id,
+                    ).single()
+                return bool(record and record["memory_count"])
+            except Exception as e:
+                logger.error(
+                    "Neo4j student-memory link error: %s. "
+                    "Falling back to in-memory graph.",
+                    e,
+                )
+
+        memory = self._in_memory_memories.get(memory_id)
+        if not memory or memory.get("user_id") != user_id:
+            logger.warning("Refused to link a Student to an unowned Memory node")
+            return False
+        self._in_memory_student_memories.setdefault(user_id, set()).add(memory_id)
+        return True
+
+    def create_memory_relationship(
+        self,
+        user_id: str,
+        source_memory_id: str,
+        relation: str | RelationshipType,
+        target_memory_id: str,
+        evidence_ids: List[str],
+        confidence: float,
+    ) -> bool:
+        """MERGE a relationship only when both Memory nodes belong to one user."""
+
+        user_id = str(user_id)
+        source_memory_id = str(source_memory_id)
+        target_memory_id = str(target_memory_id)
+        relation_value = (
+            relation.value if isinstance(relation, RelationshipType) else str(relation)
+        ).upper()
+        if relation_value not in self.ALLOWED_MEMORY_RELATIONSHIPS:
+            raise ValueError(f"Unsupported memory relationship: {relation_value}")
+        if source_memory_id == target_memory_id:
+            raise ValueError("A memory relationship cannot point to itself")
+
+        evidence_ids = list(dict.fromkeys(str(item) for item in evidence_ids))
+        confidence = max(0.0, min(1.0, float(confidence)))
+
+        if self._driver:
+            # Relationship types cannot be Cypher parameters. Interpolation is safe
+            # here because relation_value has already passed the fixed allow-list.
+            cypher = f"""
+            MATCH (source:Memory {{id: $source_memory_id, user_id: $user_id}})
+            MATCH (target:Memory {{id: $target_memory_id, user_id: $user_id}})
+            MERGE (source)-[r:{relation_value}]->(target)
+            ON CREATE SET r.created_at = datetime()
+            SET r.evidence_ids = $evidence_ids,
+                r.confidence = $confidence,
+                r.updated_at = datetime()
+            RETURN count(r) AS relationship_count
+            """
+            try:
+                with self._driver.session() as session:
+                    record = session.run(
+                        cypher,
+                        user_id=user_id,
+                        source_memory_id=source_memory_id,
+                        target_memory_id=target_memory_id,
+                        evidence_ids=evidence_ids,
+                        confidence=confidence,
+                    ).single()
+                return bool(record and record["relationship_count"])
+            except Exception as e:
+                logger.error(
+                    "Neo4j memory relationship error: %s. "
+                    "Falling back to in-memory graph.",
+                    e,
+                )
+
+        source = self._in_memory_memories.get(source_memory_id)
+        target = self._in_memory_memories.get(target_memory_id)
+        if (
+            not source
+            or not target
+            or source.get("user_id") != user_id
+            or target.get("user_id") != user_id
+        ):
+            logger.warning(
+                "Refused cross-user or unowned memory relationship %s -> %s",
+                source_memory_id,
+                target_memory_id,
+            )
+            return False
+
+        key = (source_memory_id, relation_value, target_memory_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        existing = self._in_memory_relationships.get(key, {})
+        self._in_memory_relationships[key] = {
+            "source_memory_id": source_memory_id,
+            "relation": relation_value,
+            "target_memory_id": target_memory_id,
+            "evidence_ids": evidence_ids,
+            "confidence": confidence,
+            "created_at": existing.get("created_at", now),
+            "updated_at": now,
+        }
+        return True
+
+    def get_memory_relationships(
+        self,
+        user_id: str,
+        memory_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return only Memory relationships whose endpoints belong to one user."""
+
+        user_id = str(user_id)
+        memory_id = str(memory_id) if memory_id is not None else None
+        limit = max(1, int(limit))
+
+        if self._driver:
+            cypher = """
+            MATCH (source:Memory {user_id: $user_id})-[r]->
+                  (target:Memory {user_id: $user_id})
+            WHERE type(r) IN $allowed_relations
+              AND ($memory_id IS NULL OR source.id = $memory_id OR target.id = $memory_id)
+            RETURN source.id AS source_memory_id,
+                   type(r) AS relation,
+                   target.id AS target_memory_id,
+                   r.confidence AS confidence,
+                   r.evidence_ids AS evidence_ids
+            ORDER BY r.updated_at DESC
+            LIMIT $limit
+            """
+            try:
+                with self._driver.session() as session:
+                    result = session.run(
+                        cypher,
+                        user_id=user_id,
+                        allowed_relations=sorted(self.ALLOWED_MEMORY_RELATIONSHIPS),
+                        memory_id=memory_id,
+                        limit=limit,
+                    )
+                    return [record.data() for record in result]
+            except Exception as e:
+                logger.error(
+                    "Neo4j memory relationship query error: %s. "
+                    "Falling back to in-memory graph.",
+                    e,
+                )
+
+        relationships = [
+            relationship
+            for relationship in self._in_memory_relationships.values()
+            if self._in_memory_memories.get(
+                relationship["source_memory_id"], {}
+            ).get("user_id") == user_id
+            and self._in_memory_memories.get(
+                relationship["target_memory_id"], {}
+            ).get("user_id") == user_id
+            and (
+                memory_id is None
+                or relationship["source_memory_id"] == memory_id
+                or relationship["target_memory_id"] == memory_id
+            )
+        ]
+        relationships.sort(key=lambda item: item["updated_at"], reverse=True)
+        return [
+            {
+                "source_memory_id": item["source_memory_id"],
+                "relation": item["relation"],
+                "target_memory_id": item["target_memory_id"],
+                "confidence": item["confidence"],
+                "evidence_ids": list(item["evidence_ids"]),
+            }
+            for item in relationships[:limit]
+        ]
 
     def create_memory_relationships(
         self,

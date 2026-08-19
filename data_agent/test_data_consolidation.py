@@ -9,7 +9,9 @@ from data_agent.data_llm import DataAgentLLM
 from data_agent.data_schema import (
     CandidateMemory,
     CandidateMemoryEmotion,
+    ConsolidatedMemory,
     ExistingLongTermMemory,
+    MemoryDecisionType,
     MemoryActionType,
 )
 from llm.base import LLMClient, LLMJSONParseError
@@ -347,3 +349,171 @@ async def test_multiple_emotions_are_preserved():
         "frustration",
         "sadness",
     ]
+
+
+def stage1_json(
+    consolidated_memories,
+    *,
+    rejected_candidate_ids=None,
+    user_id="user-1",
+):
+    return json.dumps(
+        {
+            "user_id": user_id,
+            "consolidated_memories": consolidated_memories,
+            "rejected_candidate_ids": rejected_candidate_ids or [],
+            "relationships": [],
+            "reasoning_summary": "Candidate evidence was consolidated by meaning.",
+        }
+    )
+
+
+def consolidated(consolidation_id, candidate_ids, content):
+    return {
+        "consolidation_id": consolidation_id,
+        "candidate_ids": candidate_ids,
+        "evidence_ids": candidate_ids,
+        "content": content,
+        "emotions": [{"emotion": "loneliness", "confidence": 0.9}],
+        "importance": 0.84,
+        "confidence": 0.89,
+    }
+
+
+def stage2_json(action_type, candidate_ids, *, memory_id=None, content=None):
+    return json.dumps(
+        {
+            "user_id": "user-1",
+            "decision": {
+                "action": action_type,
+                "memory_id": memory_id,
+                "candidate_ids": candidate_ids,
+                "evidence_ids": candidate_ids,
+                "content": content,
+                "emotions": [],
+                "importance": 0.84,
+                "confidence": 0.89,
+                "reasoning": "The retrieved context supports this decision.",
+            },
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_stage1_consolidates_related_candidates_and_preserves_evidence():
+    response = stage1_json(
+        [
+            consolidated(
+                "group-1",
+                ["cm-21", "cm-22"],
+                "Student feels lonely and wants genuine close friendships.",
+            )
+        ]
+    )
+    agent, client = data_agent(response)
+
+    result = await agent.consolidate_candidates(
+        [
+            candidate("cm-21", "I do not know how to make close friends."),
+            candidate("cm-22", "I want someone I can genuinely talk to."),
+        ]
+    )
+
+    assert len(result.consolidated_memories) == 1
+    assert result.consolidated_memories[0].candidate_ids == ["cm-21", "cm-22"]
+    assert result.consolidated_memories[0].evidence_ids == ["cm-21", "cm-22"]
+    assert result.consolidated_memories[0].content
+    assert "Do not make CREATE, UPDATE" in client.last_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_stage2_create_uses_only_retrieved_context():
+    response = stage2_json(
+        "CREATE",
+        ["cm-1"],
+        content="Student wants to build a consistent exercise routine.",
+    )
+    agent, client = data_agent(response)
+    memory = ConsolidatedMemory(**consolidated(
+        "group-1",
+        ["cm-1"],
+        "Student wants to build a consistent exercise routine.",
+    ))
+
+    decision = await agent.decide_memory_actions(
+        user_id="user-1",
+        consolidated_memory=memory,
+        existing_long_term_memories=[],
+    )
+
+    assert decision.action == MemoryDecisionType.CREATE
+    assert decision.memory_id is None
+    assert "Never use MERGE" in client.last_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_stage2_update_requires_a_retrieved_memory_id():
+    response = stage2_json(
+        "UPDATE",
+        ["cm-21", "cm-22"],
+        memory_id="mem-1",
+        content="Student experiences loneliness and strongly wants close friendships.",
+    )
+    agent, _ = data_agent(response)
+    memory = ConsolidatedMemory(**consolidated(
+        "group-1",
+        ["cm-21", "cm-22"],
+        "Student feels lonely and wants genuine close friendships.",
+    ))
+
+    decision = await agent.decide_memory_actions(
+        user_id="user-1",
+        consolidated_memory=memory,
+        existing_long_term_memories=[
+            existing_memory("mem-1", "Student struggles to form close friendships.")
+        ],
+    )
+
+    assert decision.action == MemoryDecisionType.UPDATE
+    assert decision.memory_id == "mem-1"
+
+
+@pytest.mark.asyncio
+async def test_stage2_reject_has_no_persistent_memory_id():
+    agent, _ = data_agent(stage2_json("REJECT", ["cm-1"], content=None))
+    memory = ConsolidatedMemory(**consolidated(
+        "group-1", ["cm-1"], "Student is getting lunch right now."
+    ))
+
+    decision = await agent.decide_memory_actions(
+        user_id="user-1",
+        consolidated_memory=memory,
+        existing_long_term_memories=[],
+    )
+
+    assert decision.action == MemoryDecisionType.REJECT
+    assert decision.memory_id is None
+
+
+@pytest.mark.asyncio
+async def test_stage1_handles_multiple_related_distinct_and_rejected_candidates():
+    response = stage1_json(
+        [
+            consolidated("social", ["cm-1", "cm-2"], "Student wants close friends."),
+            consolidated("career", ["cm-3", "cm-4"], "Student wants an ML career."),
+        ],
+        rejected_candidate_ids=["cm-5"],
+    )
+    agent, _ = data_agent(response)
+
+    result = await agent.consolidate_candidates(
+        [candidate(f"cm-{index}", f"candidate {index}") for index in range(1, 6)]
+    )
+
+    covered = {
+        candidate_id
+        for memory in result.consolidated_memories
+        for candidate_id in memory.candidate_ids
+    }
+    assert covered == {"cm-1", "cm-2", "cm-3", "cm-4"}
+    assert result.rejected_candidate_ids == ["cm-5"]

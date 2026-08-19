@@ -1,19 +1,27 @@
 """Readable orchestration and validation for the isolated Data Agent V1."""
 
 from collections import Counter
+import logging
 from typing import Any, Dict, List, Optional, Sequence, Set
 
 from data_agent.data_llm import DataAgentLLM, data_agent_llm
 from data_agent.data_schema import (
     CandidateMemory,
+    ConsolidatedMemory,
     DataAgentResult,
     ExistingLongTermMemory,
+    MemoryDecision,
+    MemoryDecisionType,
     MemoryActionType,
     Relationship,
     RelationshipEntityType,
+    Stage1ConsolidationResult,
 )
 from data_agent.mock_data_agent import MockDataAgent, mock_data_agent
 from emotion_agent.emotion_schema import EmotionAnalysis
+
+
+logger = logging.getLogger("manora.data_agent")
 
 
 class DataAgentValidationError(ValueError):
@@ -38,6 +46,155 @@ class DataAgent:
     ) -> List[CandidateMemory]:
         """Preserve the existing extraction interface used by older callers."""
         return self.agent.process(interaction, emotion)
+
+    async def consolidate_candidates(
+        self,
+        candidate_memories: List[CandidateMemory],
+    ) -> Stage1ConsolidationResult:
+        """Group candidate evidence into consolidated memories using Stage 1 Qwen."""
+
+        if not candidate_memories:
+            return Stage1ConsolidationResult()
+
+        user_id = self._validate_user_scope(candidate_memories, [])
+        logger.info("Stage 1: consolidating candidate memories")
+        result = await self.reasoning_agent.consolidate_candidates(
+            user_id=user_id,
+            candidate_memories=self._prepare_candidates(candidate_memories),
+        )
+        self._validate_stage1_result(result, candidate_memories, user_id)
+        logger.info(
+            "Stage 1 complete: %d consolidated memories",
+            len(result.consolidated_memories),
+        )
+        return result
+
+    async def decide_memory_actions(
+        self,
+        *,
+        user_id: str,
+        consolidated_memory: ConsolidatedMemory,
+        existing_long_term_memories: List[ExistingLongTermMemory],
+    ) -> MemoryDecision:
+        """Choose CREATE, UPDATE, or REJECT for one consolidated memory."""
+
+        if any(memory.user_id != user_id for memory in existing_long_term_memories):
+            raise DataAgentValidationError(
+                "Stage 2 existing memories must belong to the consolidated-memory user"
+            )
+        existing_ids = [memory.id for memory in existing_long_term_memories]
+        if len(existing_ids) != len(set(existing_ids)):
+            raise DataAgentValidationError("Stage 2 existing memory IDs must be unique")
+
+        logger.info("Stage 2: deciding memory action")
+        result = await self.reasoning_agent.decide_memory_action(
+            user_id=user_id,
+            consolidated_memory=consolidated_memory.model_dump(mode="json"),
+            existing_long_term_memories=self._prepare_existing_memories(
+                existing_long_term_memories
+            ),
+        )
+        if result.user_id != user_id:
+            raise DataAgentValidationError("Stage 2 result changed the user_id")
+
+        decision = result.decision
+        if (
+            len(decision.candidate_ids) != len(consolidated_memory.candidate_ids)
+            or set(decision.candidate_ids) != set(consolidated_memory.candidate_ids)
+        ):
+            raise DataAgentValidationError(
+                "Stage 2 must preserve the consolidated candidate_ids"
+            )
+
+        allowed_evidence = set(consolidated_memory.evidence_ids)
+        for memory in existing_long_term_memories:
+            allowed_evidence.update(memory.evidence_ids)
+        if not set(consolidated_memory.evidence_ids).issubset(decision.evidence_ids):
+            raise DataAgentValidationError(
+                "Stage 2 must preserve consolidated evidence_ids"
+            )
+        self._validate_evidence_ids(
+            decision.evidence_ids,
+            allowed_evidence,
+            owner="Stage 2 decision",
+        )
+        if decision.action == MemoryDecisionType.UPDATE:
+            if decision.memory_id not in set(existing_ids):
+                raise DataAgentValidationError(
+                    f"UPDATE references unknown memory_id: {decision.memory_id}"
+                )
+
+        logger.info(
+            "Stage 2 decision: %s %s",
+            decision.action.value,
+            decision.memory_id or "new memory",
+        )
+        return decision
+
+    def _validate_stage1_result(
+        self,
+        result: Stage1ConsolidationResult,
+        candidates: Sequence[CandidateMemory],
+        user_id: str,
+    ) -> None:
+        """Ensure Stage 1 covers every candidate once and preserves evidence."""
+
+        if result.user_id != user_id:
+            raise DataAgentValidationError("Stage 1 result changed the user_id")
+
+        candidate_ids = {candidate.id for candidate in candidates if candidate.id}
+        consolidation_ids = [
+            memory.consolidation_id for memory in result.consolidated_memories
+        ]
+        if len(consolidation_ids) != len(set(consolidation_ids)):
+            raise DataAgentValidationError("Stage 1 consolidation_id values must be unique")
+
+        assigned_ids = [
+            candidate_id
+            for memory in result.consolidated_memories
+            for candidate_id in memory.candidate_ids
+        ] + list(result.rejected_candidate_ids)
+        if set(assigned_ids) != candidate_ids:
+            missing = candidate_ids - set(assigned_ids)
+            invented = set(assigned_ids) - candidate_ids
+            raise DataAgentValidationError(
+                f"Stage 1 candidate coverage is invalid; missing={sorted(missing)}, "
+                f"invented={sorted(invented)}"
+            )
+        duplicates = [item for item, count in Counter(assigned_ids).items() if count > 1]
+        if duplicates:
+            raise DataAgentValidationError(
+                f"Stage 1 assigned candidates more than once: {sorted(duplicates)}"
+            )
+
+        for memory in result.consolidated_memories:
+            if not set(memory.candidate_ids).issubset(memory.evidence_ids):
+                raise DataAgentValidationError(
+                    f"{memory.consolidation_id} did not preserve candidate evidence"
+                )
+            self._validate_evidence_ids(
+                memory.evidence_ids,
+                candidate_ids,
+                owner=memory.consolidation_id,
+            )
+
+        known_groups = set(consolidation_ids)
+        for relationship in result.relationships:
+            if relationship.source_id not in known_groups:
+                raise DataAgentValidationError("Stage 1 relationship has unknown source")
+            if relationship.target_id not in known_groups:
+                raise DataAgentValidationError("Stage 1 relationship has unknown target")
+            if relationship.source_id == relationship.target_id:
+                raise DataAgentValidationError("Stage 1 relationship cannot self-reference")
+            if not relationship.evidence_ids:
+                raise DataAgentValidationError(
+                    "Stage 1 relationships must preserve evidence_ids"
+                )
+            self._validate_evidence_ids(
+                relationship.evidence_ids,
+                candidate_ids,
+                owner="Stage 1 relationship",
+            )
 
     async def consolidate(
         self,
