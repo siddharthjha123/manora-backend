@@ -121,9 +121,10 @@ class LLMClient:
         messages: List[Dict[str, str]],
         schema: Type[T],
         temperature: float = 0.3,
+        max_tokens:int = 5000,
     ) -> T:
         """Generates response and validates against a Pydantic schema."""
-        raw_text = await self.generate(messages, temperature=temperature, json_mode=True)
+        raw_text = await self.generate(messages, temperature=temperature, json_mode=True, max_tokens=max_tokens)
         json_str = self._extract_json_str(raw_text)
 
         try:

@@ -24,6 +24,7 @@ _in_memory_db: Dict[str, Dict[str, Any]] = {
     "candidate_memories": {},
     "buddy_states": {},
     "buddy_state_history": {},
+    "scheduled_tasks": {},
 }
 
 
@@ -47,11 +48,54 @@ class DatabaseManager:
                 )
                 self.is_postgres_connected = True
                 logger.info("Connected to PostgreSQL successfully.")
+                await self._initialize_feature_tables()
             except Exception as e:
                 logger.warning(f"Failed to connect to PostgreSQL ({e}). Using in-memory fallback.")
                 self.is_postgres_connected = False
         else:
             logger.info("DATABASE_URL not set. Running with in-memory persistence.")
+
+    async def _initialize_feature_tables(self) -> None:
+        """Create additive feature tables without modifying existing data.
+
+        `IF NOT EXISTS` makes startup idempotent.  Keeping this small table
+        initialization next to the connection means deployments do not depend
+        on an undocumented manual Neon operation merely to use the task API.
+        """
+
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                        id UUID PRIMARY KEY,
+                        user_id UUID NOT NULL,
+                        title VARCHAR(255) NOT NULL,
+                        description TEXT NOT NULL DEFAULT '',
+                        scheduled_date DATE NOT NULL,
+                        start_time TIME NOT NULL,
+                        end_time TIME NOT NULL,
+                        status VARCHAR(32) NOT NULL DEFAULT 'planned',
+                        decision VARCHAR(32),
+                        reason TEXT NOT NULL DEFAULT '',
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        CHECK (end_time > start_time)
+                    )
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_user_date
+                    ON scheduled_tasks (user_id, scheduled_date, start_time)
+                    """
+                )
+        except Exception as exc:
+            # The rest of MANORA can still start if this optional feature table
+            # cannot be provisioned; task methods retain the existing fallback.
+            logger.warning("Could not initialize scheduled_tasks table: %s", exc)
 
     async def close(self):
         """Closes connection pool."""
@@ -473,6 +517,445 @@ class DatabaseManager:
         }
         _in_memory_db["goals"][goal_id] = record
         return record
+
+    # ------------------------------------------------------------
+    # Alternate Timeline Tasks Repository
+    # ------------------------------------------------------------
+    async def create_scheduled_task(
+        self,
+        user_id: str,
+        title: str,
+        description: str,
+        scheduled_date: datetime.date,
+        start_time: datetime.time,
+        end_time: datetime.time,
+    ) -> Dict[str, Any]:
+        """Create one task plan; this does not create a long-term memory."""
+
+        task_id = str(uuid.uuid4())
+        user_id = str(user_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        record = {
+            "id": task_id,
+            "user_id": user_id,
+            "title": title,
+            "description": description,
+            "scheduled_date": scheduled_date,
+            "start_time": start_time,
+            "end_time": end_time,
+            "status": "planned",
+            "decision": None,
+            "reason": "",
+            "created_at": now,
+            "updated_at": now,
+        }
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO scheduled_tasks (
+                            id, user_id, title, description, scheduled_date,
+                            start_time, end_time, status, decision, reason,
+                            created_at, updated_at
+                        )
+                        VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7,
+                                $8, $9, $10, $11::timestamptz, $12::timestamptz)
+                        RETURNING *
+                        """,
+                        uuid.UUID(task_id), uuid.UUID(user_id), title, description,
+                        scheduled_date, start_time, end_time, "planned", None, "", now, now,
+                    )
+                    return dict(row)
+            except Exception as exc:
+                logger.error("PostgreSQL create_scheduled_task error: %s", exc)
+        _in_memory_db["scheduled_tasks"][task_id] = record
+        return record
+
+    async def get_scheduled_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Return one task by its opaque UUID for decision/prediction flows."""
+
+        task_id = str(task_id)
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT * FROM scheduled_tasks WHERE id = $1::uuid",
+                        uuid.UUID(task_id),
+                    )
+                    return dict(row) if row else None
+            except Exception as exc:
+                logger.error("PostgreSQL get_scheduled_task error: %s", exc)
+        return _in_memory_db["scheduled_tasks"].get(task_id)
+
+    async def get_scheduled_tasks(
+        self,
+        user_id: str,
+        scheduled_date: datetime.date,
+    ) -> List[Dict[str, Any]]:
+        """List a user's tasks for exactly one date, ordered chronologically."""
+
+        user_id = str(user_id)
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT * FROM scheduled_tasks
+                        WHERE user_id = $1::uuid AND scheduled_date = $2
+                        ORDER BY start_time, created_at
+                        """,
+                        uuid.UUID(user_id), scheduled_date,
+                    )
+                    return [dict(row) for row in rows]
+            except Exception as exc:
+                logger.error("PostgreSQL get_scheduled_tasks error: %s", exc)
+        rows = [
+            task for task in _in_memory_db["scheduled_tasks"].values()
+            if task["user_id"] == user_id and task["scheduled_date"] == scheduled_date
+        ]
+        return sorted(rows, key=lambda task: (task["start_time"], task["created_at"]))
+
+    async def update_scheduled_task_decision(
+        self,
+        task_id: str,
+        decision: str,
+        reason: str,
+        status: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist a task decision without sending it to the memory pipeline."""
+
+        task_id = str(task_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        UPDATE scheduled_tasks
+                        SET decision = $1, reason = $2, status = $3,
+                            updated_at = $4::timestamptz
+                        WHERE id = $5::uuid
+                        RETURNING *
+                        """,
+                        decision, reason, status, now, uuid.UUID(task_id),
+                    )
+                    return dict(row) if row else None
+            except Exception as exc:
+                logger.error("PostgreSQL update_scheduled_task_decision error: %s", exc)
+        task = _in_memory_db["scheduled_tasks"].get(task_id)
+        if task is None:
+            return None
+        task.update(
+            decision=decision,
+            reason=reason,
+            status=status,
+            updated_at=now,
+        )
+        return task
+
+    # ---------------------------------------------------------------------
+    # CRUD OPERATIONS AFTER DATA AGENT RESULT
+    # ---------------------------------------------------------------------
+
+    async def create_long_term_memory(
+        self,
+        user_id: str,
+        content: str,
+        importance: float,
+        confidence: float,
+        emotions: List[Dict[str, Any]],
+        evidence_ids: List[str],
+    ) -> Dict[str, Any]:
+        """Creates a new consolidated long-term memory."""
+
+        memory_id = str(uuid.uuid4())
+        user_id = str(user_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        record = {
+            "id": memory_id,
+            "user_id": user_id,
+            "content": content,
+            "importance": float(importance),
+            "confidence": float(confidence),
+            "emotions": emotions,
+            "evidence_ids": evidence_ids,
+            "created_at": now,
+            "updated_at": now,
+            "is_active": True,
+        }
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO long_term_memories (
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        )
+                        VALUES (
+                            $1::uuid,
+                            $2::uuid,
+                            $3,
+                            $4,
+                            $5,
+                            $6::jsonb,
+                            $7::jsonb,
+                            $8::timestamptz,
+                            $9::timestamptz,
+                            $10
+                        )
+                        RETURNING
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        """,
+                        uuid.UUID(memory_id),
+                        uuid.UUID(user_id),
+                        content,
+                        float(importance),
+                        float(confidence),
+                        json.dumps(emotions),
+                        json.dumps(evidence_ids),
+                        now,
+                        now,
+                        True,
+                    )
+
+                    if row:
+                        return dict(row)
+
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL create_long_term_memory error: {e}. "
+                    "Falling back to in-memory."
+                )
+
+        _in_memory_db.setdefault("long_term_memories", {})
+        _in_memory_db["long_term_memories"][memory_id] = record
+
+        return record
+
+    async def get_long_term_memory(
+        self,
+        memory_id: str,
+        user_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieves one active long-term memory for a student."""
+
+        memory_id = str(memory_id)
+        user_id = str(user_id)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        FROM long_term_memories
+                        WHERE id = $1::uuid
+                          AND user_id = $2::uuid
+                          AND is_active = TRUE
+                        """,
+                        uuid.UUID(memory_id),
+                        uuid.UUID(user_id),
+                    )
+
+                    if row:
+                        return dict(row)
+
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL get_long_term_memory error: {e}. "
+                    "Falling back to in-memory."
+                )
+
+        memory = _in_memory_db.get(
+            "long_term_memories",
+            {}
+        ).get(memory_id)
+
+        if memory and memory["user_id"] == user_id and memory["is_active"]:
+            return memory
+
+        return None
+
+    async def get_long_term_memories(
+        self,
+        user_id: str,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Retrieves active long-term memories for a student."""
+
+        user_id = str(user_id)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        FROM long_term_memories
+                        WHERE user_id = $1::uuid
+                          AND is_active = TRUE
+                        ORDER BY updated_at DESC
+                        LIMIT $2
+                        """,
+                        uuid.UUID(user_id),
+                        limit,
+                    )
+
+                    return [dict(row) for row in rows]
+
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL get_long_term_memories error: {e}. "
+                    "Falling back to in-memory."
+                )
+
+        memories = [
+            memory
+            for memory in _in_memory_db.get(
+                "long_term_memories",
+                {}
+            ).values()
+            if memory["user_id"] == user_id
+            and memory["is_active"]
+        ]
+
+        memories.sort(
+            key=lambda memory: memory["updated_at"],
+            reverse=True,
+        )
+
+        return memories[:limit]
+
+    async def update_long_term_memory(
+        self,
+        memory_id: str,
+        user_id: str,
+        content: str,
+        importance: float,
+        confidence: float,
+        emotions: List[Dict[str, Any]],
+        evidence_ids: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Updates an existing consolidated long-term memory."""
+
+        memory_id = str(memory_id)
+        user_id = str(user_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        UPDATE long_term_memories
+                        SET
+                            content = $1,
+                            importance = $2,
+                            confidence = $3,
+                            emotions = $4::jsonb,
+                            evidence_ids = $5::jsonb,
+                            updated_at = $6::timestamptz
+                        WHERE id = $7::uuid
+                          AND user_id = $8::uuid
+                          AND is_active = TRUE
+                        RETURNING
+                            id,
+                            user_id,
+                            content,
+                            importance,
+                            confidence,
+                            emotions,
+                            evidence_ids,
+                            created_at,
+                            updated_at,
+                            is_active
+                        """,
+                        content,
+                        float(importance),
+                        float(confidence),
+                        json.dumps(emotions),
+                        json.dumps(evidence_ids),
+                        now,
+                        uuid.UUID(memory_id),
+                        uuid.UUID(user_id),
+                    )
+
+                    if row:
+                        return dict(row)
+
+                    return None
+
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL update_long_term_memory error: {e}. "
+                    "Falling back to in-memory."
+                )
+
+        memories = _in_memory_db.setdefault(
+            "long_term_memories",
+            {},
+        )
+
+        memory = memories.get(memory_id)
+
+        if not memory:
+            return None
+
+        if memory["user_id"] != user_id:
+            return None
+
+        if not memory["is_active"]:
+            return None
+
+        memory["content"] = content
+        memory["importance"] = float(importance)
+        memory["confidence"] = float(confidence)
+        memory["emotions"] = emotions
+        memory["evidence_ids"] = evidence_ids
+        memory["updated_at"] = now
+
+        return memory
 
 
 # Global singleton instance

@@ -48,6 +48,13 @@ try:
         ENVIRONMENT: str = "development"
         LOG_LEVEL: str = "INFO"
 
+        # Data Agent
+        DATA_AGENT_API_KEY: Optional[str] = None
+        DATA_AGENT_BASE_URL: str = "https://ai.tcetcercd.in/v1"
+        DATA_AGENT_MODEL_NAME: str = "qwen3.6"
+        DATA_AGENT_ENABLE_THINKING: bool = True
+        DATA_AGENT_REASONING_EFFORT: str = "medium"
+
 except ImportError:
     # Fallback if pydantic-settings is not installed
     from pydantic import BaseModel
