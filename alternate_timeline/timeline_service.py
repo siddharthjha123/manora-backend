@@ -53,7 +53,7 @@ class AlternateTimelineService:
     def _to_response(task: Dict[str, Any]) -> TaskResponse:
         return TaskResponse(
             task_id=str(task.get("task_id") or task["id"]),
-            user_id=task["user_id"],
+            user_id=str(task["user_id"]),
             title=task["title"],
             description=task["description"],
             date=task.get("date") or task["scheduled_date"],
@@ -147,10 +147,39 @@ class AlternateTimelineService:
                 {
                     "role": "system",
                     "content": (
-                        "Generate a cautious alternate timeline from the supplied "
-                        "task and historical context. Return JSON matching the schema. "
-                        "Describe likely possibilities, not certainties. Do not diagnose, "
-                        "shame, or invent history."
+        "You are an alternate-timeline reasoning engine.\n\n"
+        "Your task is to predict a plausible consequence timeline "
+        "for the student's chosen decision.\n\n"
+        "You MUST return ONLY a JSON object with exactly these top-level keys:\n"
+        "- baseline\n"
+        "- events\n"
+        "- summary\n\n"
+        "The response MUST NOT contain task, decision, reason, "
+        "relevant_memories, or graph_context.\n\n"
+        "Schema:\n"
+        "{\n"
+        '  "baseline": {\n'
+        '    "description": "string",\n'
+        '    "confidence": 0.0\n'
+        "  },\n"
+        '  "events": [\n'
+        "    {\n"
+        '      "time": "string",\n'
+        '      "event": "string",\n'
+        '      "likely_effect": "string"\n'
+        "    }\n"
+        "  ],\n"
+        '  "summary": "string"\n'
+        "}\n\n"
+        "Rules:\n"
+        "1. baseline.description must describe the likely overall trajectory.\n"
+        "2. baseline.confidence must be between 0 and 1.\n"
+        "3. events must contain only plausible possibilities.\n"
+        "4. Do not invent historical facts.\n"
+        "5. Do not diagnose the student.\n"
+        "6. Do not shame or judge the student.\n"
+        "7. If there is insufficient historical context, explicitly acknowledge uncertainty.\n"
+        "8. Return valid JSON only. No markdown. No explanation outside JSON."
                     ),
                 },
                 {
