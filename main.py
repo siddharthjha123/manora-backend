@@ -9,8 +9,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.buddy import router as buddy_router
+from api.alternate_timeline import router as alternate_timeline_router
 from api.emotions import router as emotions_router
 from api.interactions import router as interactions_router
+from api.memory_tree import router as memory_tree_router
 from config.settings import get_settings
 from database.connection import db
 
@@ -60,6 +62,8 @@ app.add_middleware(
 app.include_router(interactions_router)
 app.include_router(emotions_router)
 app.include_router(buddy_router)
+app.include_router(memory_tree_router)
+app.include_router(alternate_timeline_router)
 
 
 @app.get("/", tags=["System"])
