@@ -13,11 +13,9 @@ from typing import Any, Dict, List, Optional
 from data_agent.data_engine import DataAgent, DataAgentValidationError, data_agent
 from data_agent.data_schema import (
     CandidateMemory,
-    DataAgentResult,
     ExistingLongTermMemory,
     GraphRelationshipResult,
     GraphRelationshipStatus,
-    MemoryActionType,
     MemoryDecision,
     MemoryDecisionType,
     MemoryPipelineResult,
@@ -123,6 +121,36 @@ class MemoryEngine:
             "retrieval_performed": False,
         }
 
+    def extract_candidate_memories(
+        self,
+        *,
+        interaction: Dict[str, Any],
+        emotion_analysis: Any,
+    ) -> List[CandidateMemory]:
+        """Extract and normalize temporary candidates for Stage 1 processing.
+
+        The existing Data Agent extraction interface converts the Emotion Agent's
+        structured analysis into ``CandidateMemory`` objects. Candidate IDs and
+        ownership are completed here because Stage 1 requires stable evidence IDs
+        and an explicit single-user boundary.
+        """
+
+        user_id = str(interaction.get("user_id") or "").strip()
+        if not user_id:
+            raise ValueError("Candidate-memory extraction requires interaction user_id")
+
+        candidates = self.data_agent.process(interaction, emotion_analysis)
+        for candidate in candidates:
+            if candidate.user_id and str(candidate.user_id) != user_id:
+                raise ValueError(
+                    "Candidate-memory extraction returned a different user_id"
+                )
+            candidate.id = candidate.id or str(uuid.uuid4())
+            candidate.user_id = user_id
+
+        logger.info("Extracted %d candidate memories", len(candidates))
+        return candidates
+
     async def retrieve_context(
         self,
         user_id: str,
@@ -151,52 +179,6 @@ class MemoryEngine:
             "graph_context": graph_context,
             "retrieval_performed": True,
         }
-
-    async def persist_candidates(
-        self,
-        user_id: str,
-        interaction_id: str,
-        candidate_memories: List[CandidateMemory],
-    ) -> List[Dict[str, Any]]:
-        """
-        Store candidate evidence in PostgreSQL without treating it as long-term memory.
-        """
-        if not candidate_memories:
-            return []
-
-        persisted = []
-        for candidate in candidate_memories:
-            # Check meaningfulness threshold
-            is_meaningful = (
-                candidate.importance >= self.IMPORTANCE_THRESHOLD
-                and candidate.confidence >= self.CONFIDENCE_THRESHOLD
-            )
-
-            status = "accepted" if is_meaningful else "pending"
-            memory_id = candidate.id or str(uuid.uuid4())
-            candidate.id = memory_id
-
-            mem_dict = {
-                "id": memory_id,
-                "content": candidate.content,
-                "context": candidate.context,
-                "emotional_state": [e.model_dump() for e in candidate.emotional_state],
-                "importance": candidate.importance,
-                "confidence": candidate.confidence,
-                "status": status,
-            }
-
-            # 1. Canonical write to PostgreSQL
-            await self.db.save_candidate_memories(
-                interaction_id=interaction_id,
-                user_id=user_id,
-                candidate_memories=[mem_dict],
-            )
-
-            persisted.append(mem_dict)
-
-        logger.info(f"Processed {len(persisted)} candidate memories for interaction {interaction_id}")
-        return persisted
 
     async def process_long_term_memories(
         self,
@@ -522,150 +504,6 @@ class MemoryEngine:
             qdrant_operation="UPSERT" if qdrant_upserted else "FAILED",
             memory=memory,
         )
-
-    # --------------------------------------------------------------------
-    # Beyond the above code is the actual data agent code 
-    # --------------------------------------------------------------------
-    async def persist_memory_candidates(self, result:DataAgentResult) -> List[Dict[str, Any]]:
-        """
-        Persist the long-term memory actions produced by the Data Agent.
-
-        The Data Agent decides what should happen:
-            CREATE  -> create a new long-term memory
-            UPDATE  -> update an existing long-term memory
-            MERGE   -> create one new consolidated memory
-            REJECT  -> do nothing
-
-        This method only executes those decisions in PostgreSQL.
-        It strictly does not perform any kind of reasoning.
-        """
-
-        if not result.memory_actions:
-            logger.info("No memory actions to persist")
-            return []
-
-        if not result.user_id:
-            raise ValueError("DataAgentResult.user_id is required for persistence")
-
-        persisted_memories: List[Dict[str, Any]] = []
-
-        for action in result.memory_actions:
-            try:
-                # -------------------------------------------------
-                # REJECT
-                # -------------------------------------------------
-                if action.action == MemoryActionType.REJECT:
-                    logger.info(
-                        "Rejected memory action %s: %s",
-                        action.action_id,
-                        action.reasoning,
-                    )
-                    continue
-
-                # CREATE and MERGE both create a new consolidated memory.
-                if action.action in {
-                    MemoryActionType.CREATE,
-                    MemoryActionType.MERGE,
-                }:
-                    memory = await self.db.create_long_term_memory(
-                        user_id=result.user_id,
-                        content=action.content,
-                        importance=action.importance,
-                        confidence=action.confidence,
-                        emotions=[
-                            emotion.model_dump()
-                            for emotion in action.emotions
-                        ],
-                        evidence_ids=action.evidence_ids,
-                    )
-
-                    persisted_memories.append(
-                        {
-                            "action_id": action.action_id,
-                            "action": action.action.value,
-                            "memory": memory,
-                        }
-                    )
-
-                    logger.info(
-                        "%s action %s persisted as new long-term memory %s",
-                        action.action.value,
-                        action.action_id,
-                        memory.get("id") if memory else None,
-                    )
-
-                    continue
-
-                # -------------------------------------------------
-                # UPDATE
-                # -------------------------------------------------
-                if action.action == MemoryActionType.UPDATE:
-                    memory = await self.db.update_long_term_memory(
-                        memory_id=action.memory_id,
-                        user_id=result.user_id,
-                        content=action.content,
-                        importance=action.importance,
-                        confidence=action.confidence,
-                        emotions=[
-                            emotion.model_dump()
-                            for emotion in action.emotions
-                        ],
-                        evidence_ids=action.evidence_ids,
-                    )
-
-                    if memory is None:
-                        logger.warning(
-                            "UPDATE action %s could not find memory %s",
-                            action.action_id,
-                            action.memory_id,
-                        )
-
-                        persisted_memories.append(
-                            {
-                                "action_id": action.action_id,
-                                "action": action.action.value,
-                                "memory": None,
-                                "status": "memory_not_found",
-                            }
-                        )
-
-                        continue
-
-                    persisted_memories.append(
-                        {
-                            "action_id": action.action_id,
-                            "action": action.action.value,
-                            "memory": memory,
-                        }
-                    )
-
-                    logger.info(
-                        "UPDATE action %s persisted for memory %s",
-                        action.action_id,
-                        action.memory_id,
-                    )
-            except Exception:
-                logger.exception(
-                    "Failed to persist memory action %s",
-                    action.action_id,
-                )
-
-                persisted_memories.append(
-                    {
-                        "action_id": action.action_id,
-                        "action": action.action.value,
-                        "memory": None,
-                        "status": "persistence_failed",
-                    }
-                )
-
-        logger.info(
-            "Persisted %d/%d Data Agent memory actions.",
-            len(persisted_memories),
-            len(result.memory_actions),
-        )
-
-        return persisted_memories
 
 
 # Global singleton instance

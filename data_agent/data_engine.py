@@ -7,17 +7,17 @@ from typing import Any, Dict, List, Optional, Sequence, Set
 from data_agent.data_llm import DataAgentLLM, data_agent_llm
 from data_agent.data_schema import (
     CandidateMemory,
+    CandidateMemoryBehavior,
+    CandidateMemoryDecision,
+    CandidateMemoryEmotion,
+    CandidateMemoryEvent,
+    CandidateMemoryGoalRelevance,
     ConsolidatedMemory,
-    DataAgentResult,
     ExistingLongTermMemory,
     MemoryDecision,
     MemoryDecisionType,
-    MemoryActionType,
-    Relationship,
-    RelationshipEntityType,
     Stage1ConsolidationResult,
 )
-from data_agent.mock_data_agent import MockDataAgent, mock_data_agent
 from emotion_agent.emotion_schema import EmotionAnalysis
 
 
@@ -29,14 +29,51 @@ class DataAgentValidationError(ValueError):
 
 
 class DataAgent:
-    """Expose legacy extraction plus isolated LLM memory consolidation."""
+    """Extract candidate evidence and perform the two LLM memory stages."""
+
+    MEMORY_WORTHY_EMOTIONS = {
+        "anger",
+        "anxiety",
+        "burnout",
+        "fear",
+        "frustration",
+        "guilt",
+        "hopelessness",
+        "insecurity",
+        "isolation",
+        "loneliness",
+        "overwhelm",
+        "sadness",
+        "stress",
+        "worry",
+    }
+    MEMORY_WORTHY_SIGNAL_MARKERS = {
+        "alone",
+        "avoid",
+        "cannot",
+        "commit",
+        "conflict",
+        "delay",
+        "distract",
+        "fail",
+        "goal",
+        "intend",
+        "isolate",
+        "keep",
+        "plan",
+        "procrast",
+        "repeat",
+        "routine",
+        "skip",
+        "struggle",
+        "unable",
+        "withdraw",
+    }
 
     def __init__(
         self,
-        agent: MockDataAgent = mock_data_agent,
         reasoning_agent: Optional[DataAgentLLM] = None,
     ):
-        self.agent = agent
         self.reasoning_agent = reasoning_agent or data_agent_llm
 
     def process(
@@ -44,8 +81,98 @@ class DataAgent:
         interaction: Dict[str, Any],
         emotion: EmotionAnalysis,
     ) -> List[CandidateMemory]:
-        """Preserve the existing extraction interface used by older callers."""
-        return self.agent.process(interaction, emotion)
+        """Create candidate evidence directly from structured Emotion Agent output.
+
+        Positive greetings and other ordinary conversation are intentionally not
+        promoted merely because an emotion model assigns high intensity. Durable
+        negative emotion, behavioral signals, or decision signals can produce a
+        candidate for Stage 1; Stage 2 remains responsible for final persistence.
+        """
+
+        raw_text = str(interaction.get("raw_text") or "").strip()
+        if not raw_text:
+            return []
+
+        meaningful_emotions = [
+            item
+            for item in emotion.emotions
+            if item.emotion.lower() in self.MEMORY_WORTHY_EMOTIONS
+            and item.intensity >= 0.6
+        ]
+        signal_text = " ".join(
+            emotion.behavioral_signals + emotion.decision_signals
+        ).lower()
+        has_durable_signal = any(
+            marker in signal_text
+            for marker in self.MEMORY_WORTHY_SIGNAL_MARKERS
+        )
+        if not meaningful_emotions and not has_durable_signal:
+            return []
+
+        candidate_emotions = [
+            CandidateMemoryEmotion(
+                emotion=item.emotion,
+                confidence=round(item.confidence, 3),
+            )
+            for item in (meaningful_emotions or emotion.emotions[:2])
+        ]
+        events = [
+            CandidateMemoryEvent(type="behavioral_signal", description=signal)
+            for signal in emotion.behavioral_signals
+        ]
+        behavior = (
+            CandidateMemoryBehavior(
+                type="observed_behavior",
+                description=emotion.behavioral_signals[0],
+            )
+            if emotion.behavioral_signals
+            else None
+        )
+        decision = (
+            CandidateMemoryDecision(description=emotion.decision_signals[0])
+            if emotion.decision_signals
+            else None
+        )
+
+        maximum_intensity = max(
+            (item.intensity for item in meaningful_emotions),
+            default=0.6,
+        )
+        importance = 0.62 + (0.18 * maximum_intensity)
+        if has_durable_signal:
+            importance += 0.06
+        if emotion.goal_relevance.related:
+            importance += 0.05
+        confidence = (
+            sum(item.confidence for item in candidate_emotions)
+            / len(candidate_emotions)
+            if candidate_emotions
+            else 0.75
+        )
+
+        return [
+            CandidateMemory(
+                content=raw_text,
+                context={
+                    "topic": (
+                        "goal_related"
+                        if emotion.goal_relevance.related
+                        else "emotional_wellbeing"
+                    ),
+                    "emotional_summary": emotion.emotional_summary,
+                },
+                emotional_state=candidate_emotions,
+                events=events,
+                behavior=behavior,
+                decision=decision,
+                goal_relevance=CandidateMemoryGoalRelevance(
+                    related=emotion.goal_relevance.related,
+                    goal=emotion.goal_relevance.goal,
+                ),
+                importance=round(min(0.95, importance), 3),
+                confidence=round(confidence, 3),
+            )
+        ]
 
     async def consolidate_candidates(
         self,
@@ -196,34 +323,6 @@ class DataAgent:
                 owner="Stage 1 relationship",
             )
 
-    async def consolidate(
-        self,
-        candidate_memories: List[CandidateMemory],
-        existing_long_term_memories: Optional[List[ExistingLongTermMemory]] = None,
-        graph_context: Optional[List[Dict[str, Any]]] = None,
-        semantic_context: Optional[List[Dict[str, Any]]] = None,
-    ) -> DataAgentResult:
-        """Ask the LLM to reason, then validate its proposed memory actions."""
-        if not candidate_memories:
-            return DataAgentResult()
-
-        existing_memories = existing_long_term_memories or []
-        user_id = self._validate_user_scope(candidate_memories, existing_memories)
-        candidate_payload = self._prepare_candidates(candidate_memories)
-        existing_payload = self._prepare_existing_memories(existing_memories)
-
-        result = await self.reasoning_agent.reason(
-            user_id=user_id,
-            candidate_memories=candidate_payload,
-            existing_long_term_memories=existing_payload,
-            graph_context=list(graph_context or []),
-            semantic_context=list(semantic_context or []),
-        )
-
-        self._validate_result_user(result, user_id)
-        self._validate_memory_actions(result, candidate_memories, existing_memories)
-        self._validate_relationships(result, candidate_memories, existing_memories)
-        return result
 
     def _validate_user_scope(
         self,
@@ -283,116 +382,6 @@ class DataAgent:
         return [memory.model_dump(mode="json") for memory in existing_memories]
 
     @staticmethod
-    def _validate_result_user(result: DataAgentResult, expected_user_id: str) -> None:
-        if result.user_id != expected_user_id:
-            raise DataAgentValidationError(
-                "LLM result user_id does not match the validated input user"
-            )
-
-    def _validate_memory_actions(
-        self,
-        result: DataAgentResult,
-        candidates: Sequence[CandidateMemory],
-        existing_memories: Sequence[ExistingLongTermMemory],
-    ) -> None:
-        """Validate action IDs, candidate coverage, evidence, and UPDATE targets."""
-        candidate_ids = {candidate.id for candidate in candidates if candidate.id}
-        existing_ids = {memory.id for memory in existing_memories}
-        allowed_evidence_ids = self._allowed_evidence_ids(candidates, existing_memories)
-
-        action_ids = [action.action_id for action in result.memory_actions]
-        if len(action_ids) != len(set(action_ids)):
-            raise DataAgentValidationError("LLM action_id values must be unique")
-
-        assigned_ids = [
-            candidate_id
-            for action in result.memory_actions
-            for candidate_id in action.candidate_ids
-        ]
-        unknown_candidates = set(assigned_ids) - candidate_ids
-        if unknown_candidates:
-            raise DataAgentValidationError(
-                f"LLM invented candidate IDs: {sorted(unknown_candidates)}"
-            )
-        if set(assigned_ids) != candidate_ids:
-            missing_ids = candidate_ids - set(assigned_ids)
-            raise DataAgentValidationError(
-                f"Every candidate must receive one action; missing: {sorted(missing_ids)}"
-            )
-        duplicates = sorted(
-            memory_id for memory_id, count in Counter(assigned_ids).items() if count > 1
-        )
-        if duplicates:
-            raise DataAgentValidationError(
-                f"Candidates may not appear in multiple actions: {duplicates}"
-            )
-
-        for action in result.memory_actions:
-            if not action.candidate_ids:
-                raise DataAgentValidationError("Every memory action needs candidate_ids")
-            self._validate_evidence_ids(
-                action.evidence_ids,
-                allowed_evidence_ids,
-                owner=f"action {action.action_id}",
-            )
-            if not set(action.candidate_ids).issubset(set(action.evidence_ids)):
-                raise DataAgentValidationError(
-                    f"Action {action.action_id} must retain its candidate IDs as evidence"
-                )
-            if action.action == MemoryActionType.UPDATE:
-                if action.memory_id not in existing_ids:
-                    raise DataAgentValidationError(
-                        f"UPDATE references unknown memory_id: {action.memory_id}"
-                    )
-
-    def _validate_relationships(
-        self,
-        result: DataAgentResult,
-        candidates: Sequence[CandidateMemory],
-        existing_memories: Sequence[ExistingLongTermMemory],
-    ) -> None:
-        """Validate relationship evidence and any references with known identities."""
-        allowed_evidence_ids = self._allowed_evidence_ids(candidates, existing_memories)
-        candidate_ids = {candidate.id for candidate in candidates if candidate.id}
-        existing_ids = {memory.id for memory in existing_memories}
-        action_ids = {action.action_id for action in result.memory_actions}
-
-        for relationship in result.relationships:
-            if relationship.source_id == relationship.target_id:
-                raise DataAgentValidationError("A relationship cannot point to itself")
-            if not relationship.evidence_ids:
-                raise DataAgentValidationError("Every relationship must contain evidence")
-            self._validate_evidence_ids(
-                relationship.evidence_ids,
-                allowed_evidence_ids,
-                owner="relationship",
-            )
-            self._validate_relationship_endpoint(
-                relationship,
-                endpoint="source",
-                candidate_ids=candidate_ids,
-                existing_ids=existing_ids,
-                action_ids=action_ids,
-            )
-            self._validate_relationship_endpoint(
-                relationship,
-                endpoint="target",
-                candidate_ids=candidate_ids,
-                existing_ids=existing_ids,
-                action_ids=action_ids,
-            )
-
-    @staticmethod
-    def _allowed_evidence_ids(
-        candidates: Sequence[CandidateMemory],
-        existing_memories: Sequence[ExistingLongTermMemory],
-    ) -> Set[str]:
-        evidence = {candidate.id for candidate in candidates if candidate.id}
-        for memory in existing_memories:
-            evidence.update(memory.evidence_ids)
-        return evidence
-
-    @staticmethod
     def _validate_evidence_ids(
         evidence_ids: Sequence[str],
         allowed_ids: Set[str],
@@ -404,27 +393,5 @@ class DataAgent:
             raise DataAgentValidationError(
                 f"{owner} contains invented evidence IDs: {sorted(unknown_ids)}"
             )
-
-    @staticmethod
-    def _validate_relationship_endpoint(
-        relationship: Relationship,
-        *,
-        endpoint: str,
-        candidate_ids: Set[str],
-        existing_ids: Set[str],
-        action_ids: Set[str],
-    ) -> None:
-        entity_id = getattr(relationship, f"{endpoint}_id")
-        entity_type = getattr(relationship, f"{endpoint}_type")
-        known_ids = {
-            RelationshipEntityType.CANDIDATE_MEMORY: candidate_ids,
-            RelationshipEntityType.LONG_TERM_MEMORY: existing_ids,
-            RelationshipEntityType.MEMORY_ACTION: action_ids,
-        }
-        if entity_type in known_ids and entity_id not in known_ids[entity_type]:
-            raise DataAgentValidationError(
-                f"Relationship {endpoint} references unknown {entity_type.value}: {entity_id}"
-            )
-
 
 data_agent = DataAgent()
