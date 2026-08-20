@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import uuid
+import time
 from typing import Any, Dict, List, Optional
 
 from data_agent.data_engine import DataAgent, DataAgentValidationError, data_agent
@@ -25,6 +26,7 @@ from data_agent.data_schema import (
 from database.connection import DatabaseManager, db
 from graph_db.neo4j_client import Neo4jAdapter, neo4j_adapter
 from vector_db.qdrant_client import QdrantAdapter, qdrant_adapter
+from observability.metrics import MEMORY_RETRIEVALS_TOTAL, MEMORY_RETRIEVAL_LATENCY_SECONDS
 
 logger = logging.getLogger("manora.memory.engine")
 
@@ -160,25 +162,37 @@ class MemoryEngine:
         Retrieves semantic memories from Qdrant and relationship context from Neo4j.
         """
         logger.info(f"Retrieving memory context for user {user_id}")
+        start_time = time.perf_counter()
 
-        # 1. Semantic search in Qdrant
-        semantic_memories = self.qdrant.search_memories(
-            user_id=user_id,
-            query_text=text,
-            limit=3,
-        )
+        try:
+            # 1. Semantic search in Qdrant
+            semantic_memories = self.qdrant.search_memories(
+                user_id=user_id,
+                query_text=text,
+                limit=3,
+            )
 
-        # 2. Relationship search in Neo4j
-        graph_context = self.neo4j.get_relevant_graph_context(
-            user_id=user_id,
-            limit=3,
-        )
+            # 2. Relationship search in Neo4j
+            graph_context = self.neo4j.get_relevant_graph_context(
+                user_id=user_id,
+                limit=3,
+            )
 
-        return {
-            "memories": semantic_memories,
-            "graph_context": graph_context,
-            "retrieval_performed": True,
-        }
+            elapsed = time.perf_counter() - start_time
+            MEMORY_RETRIEVAL_LATENCY_SECONDS.labels(operation="retrieve_context").observe(elapsed)
+            MEMORY_RETRIEVALS_TOTAL.labels(status="success", retrieval_performed="true").inc()
+
+            return {
+                "memories": semantic_memories,
+                "graph_context": graph_context,
+                "retrieval_performed": True,
+            }
+        except Exception as exc:
+            elapsed = time.perf_counter() - start_time
+            MEMORY_RETRIEVAL_LATENCY_SECONDS.labels(operation="retrieve_context").observe(elapsed)
+            MEMORY_RETRIEVALS_TOTAL.labels(status="error", retrieval_performed="true").inc()
+            logger.error("Failed to retrieve memory context: %s", exc)
+            raise
 
     async def process_long_term_memories(
         self,

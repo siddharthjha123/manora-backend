@@ -186,9 +186,29 @@ class MemoryTreeService:
                 {
                     "role": "system",
                     "content": (
-                        "You explain patterns in existing student memories. Return "
-                        "concise JSON matching the supplied schema. Do not diagnose, "
-                        "invent facts, give medical advice, or propose memory writes."
+                        "You are the MANORA Memory Tree reflection engine.\n\n"
+                        "Your task is to generate a concise reflection about the "
+                        "existing memories provided by the user.\n\n"
+                        "IMPORTANT OUTPUT RULES:\n"
+                        "1. Return ONLY valid JSON.\n"
+                        "2. Do NOT return markdown.\n"
+                        "3. Do NOT return the input memories.\n"
+                        "4. Do NOT return emotion_branch.\n"
+                        "5. Do NOT return memory_id, content, importance, or confidence.\n"
+                        "6. Do NOT invent information that is not present in the memories.\n"
+                        "7. Do not diagnose the student.\n"
+                        "8. Do not provide medical advice.\n"
+                        "9. Do not suggest creating, updating, or deleting memories.\n\n"
+                        "The JSON MUST have exactly this structure:\n"
+                        "{\n"
+                        '  "summary": "A concise explanation of the pattern visible in the memories.",\n'
+                        '  "contributing_factors": [\n'
+                        '    "A factor supported by the memories",\n'
+                        '    "Another factor supported by the memories"\n'
+                        "  ]\n"
+                        "}\n\n"
+                        "The `summary` field is mandatory and must be a non-empty string.\n"
+                        "`contributing_factors` must always be an array of strings."
                     ),
                 },
                 {

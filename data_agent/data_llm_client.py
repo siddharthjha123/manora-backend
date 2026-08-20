@@ -17,8 +17,9 @@ import time
 from typing import Any, Dict, List, Optional
 
 from llm.base import LLMClient, LLMError
-
 from config.settings import get_settings
+from observability.metrics import LLM_REQUESTS_TOTAL, LLM_ERRORS_TOTAL, LLM_LATENCY_SECONDS
+from observability.langfuse import record_generation
 
 
 logger = logging.getLogger("manora.data_agent.llm")
@@ -94,14 +95,6 @@ class DataAgentLLMClient(LLMClient):
             "max_tokens": max_tokens,
         }
 
-        # The college gateway supports Qwen thinking controls
-        # through chat_template_kwargs.
-        # payload["extra_body"] = {
-        #     "chat_template_kwargs": {
-        #         "enable_thinking": self.enable_thinking,
-        #         "reasoning_effort": self.reasoning_effort,
-        #     }
-        # }
         payload["chat_template_kwargs"] = {
             "enable_thinking": self.enable_thinking,
             "reasoning_effort": self.reasoning_effort,
@@ -127,11 +120,17 @@ class DataAgentLLMClient(LLMClient):
                 data = response.json()
 
         except httpx.HTTPError as exc:
+            elapsed_seconds = time.perf_counter() - start_time
+            LLM_LATENCY_SECONDS.labels(model=self.model_name).observe(elapsed_seconds)
+            LLM_REQUESTS_TOTAL.labels(model=self.model_name, status="error").inc()
+            LLM_ERRORS_TOTAL.labels(model=self.model_name, error_type=type(exc).__name__).inc()
             raise LLMError(
                 f"Data Agent LLM request failed: {exc}"
             ) from exc
 
         elapsed_seconds = time.perf_counter() - start_time
+        LLM_LATENCY_SECONDS.labels(model=self.model_name).observe(elapsed_seconds)
+        LLM_REQUESTS_TOTAL.labels(model=self.model_name, status="success").inc()
 
         self._record_usage(
             response_data=data,
@@ -157,9 +156,19 @@ class DataAgentLLMClient(LLMClient):
                     "The model returned reasoning but no final content."
                 )
 
+            LLM_ERRORS_TOTAL.labels(model=self.model_name, error_type="EmptyContent").inc()
             raise LLMError(
                 "Data Agent LLM returned empty message content."
             )
+
+        record_generation(
+            name="data_agent_generation",
+            model=self.model_name,
+            messages=messages,
+            output=content,
+            usage=data.get("usage"),
+            metadata={"enable_thinking": self.enable_thinking, "reasoning_effort": self.reasoning_effort},
+        )
 
         return content
 
