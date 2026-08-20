@@ -55,6 +55,18 @@ try:
         DATA_AGENT_ENABLE_THINKING: bool = True
         DATA_AGENT_REASONING_EFFORT: str = "medium"
 
+        # Observability - Sentry
+        SENTRY_DSN: Optional[str] = None
+        SENTRY_TRACES_SAMPLE_RATE: float = 1.0
+
+        # Observability - Langfuse
+        LANGFUSE_PUBLIC_KEY: Optional[str] = None
+        LANGFUSE_SECRET_KEY: Optional[str] = None
+        LANGFUSE_BASE_URL: str = "https://cloud.langfuse.com"
+
+        # Observability - Prometheus
+        PROMETHEUS_ENABLED: bool = True
+
 except ImportError:
     # Fallback if pydantic-settings is not installed
     from pydantic import BaseModel
@@ -77,6 +89,17 @@ except ImportError:
         APP_VERSION: str = "1.0.0"
         ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
         LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+        DATA_AGENT_API_KEY: Optional[str] = os.getenv("DATA_AGENT_API_KEY")
+        DATA_AGENT_BASE_URL: str = os.getenv("DATA_AGENT_BASE_URL", "https://ai.tcetcercd.in/v1")
+        DATA_AGENT_MODEL_NAME: str = os.getenv("DATA_AGENT_MODEL_NAME", "qwen3.6")
+        DATA_AGENT_ENABLE_THINKING: bool = os.getenv("DATA_AGENT_ENABLE_THINKING", "true").lower() in ("true", "1", "yes")
+        DATA_AGENT_REASONING_EFFORT: str = os.getenv("DATA_AGENT_REASONING_EFFORT", "medium")
+        SENTRY_DSN: Optional[str] = os.getenv("SENTRY_DSN")
+        SENTRY_TRACES_SAMPLE_RATE: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "1.0"))
+        LANGFUSE_PUBLIC_KEY: Optional[str] = os.getenv("LANGFUSE_PUBLIC_KEY")
+        LANGFUSE_SECRET_KEY: Optional[str] = os.getenv("LANGFUSE_SECRET_KEY")
+        LANGFUSE_BASE_URL: str = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
+        PROMETHEUS_ENABLED: bool = os.getenv("PROMETHEUS_ENABLED", "true").lower() in ("true", "1", "yes")
 
 
 @lru_cache()
