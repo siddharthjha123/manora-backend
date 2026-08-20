@@ -6,10 +6,13 @@ Provides OpenRouter / OpenAI compatible client for LLM completions and structure
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from config.settings import get_settings
+from observability.metrics import LLM_REQUESTS_TOTAL, LLM_ERRORS_TOTAL, LLM_LATENCY_SECONDS
+from observability.langfuse import record_generation
 
 logger = logging.getLogger("manora.llm")
 
@@ -57,9 +60,22 @@ class LLMClient:
         max_tokens: int = 5500,
     ) -> str:
         """Generates text completion using configured OpenRouter / OpenAI model."""
+        start_time = time.perf_counter()
+
         if not self.api_key:
             logger.info("No OPENROUTER_API_KEY set. Returning fallback deterministic completion.")
-            return self._mock_generate(messages, json_mode=json_mode)
+            response_text = self._mock_generate(messages, json_mode=json_mode)
+            elapsed = time.perf_counter() - start_time
+            LLM_LATENCY_SECONDS.labels(model=self.model_name).observe(elapsed)
+            LLM_REQUESTS_TOTAL.labels(model=self.model_name, status="success").inc()
+            record_generation(
+                name="llm_generation_mock",
+                model=self.model_name,
+                messages=messages,
+                output=response_text,
+                metadata={"mock": True, "json_mode": json_mode},
+            )
+            return response_text
 
         try:
             import httpx
@@ -108,9 +124,28 @@ class LLMClient:
                     
                     raise LLMError("LLM returned empty message content")
 
+                elapsed = time.perf_counter() - start_time
+                LLM_LATENCY_SECONDS.labels(model=self.model_name).observe(elapsed)
+                LLM_REQUESTS_TOTAL.labels(model=self.model_name, status="success").inc()
+
+                usage = data.get("usage")
+                record_generation(
+                    name="llm_generation",
+                    model=self.model_name,
+                    messages=messages,
+                    output=content,
+                    usage=usage,
+                    metadata={"temperature": temperature, "json_mode": json_mode},
+                )
+
                 return content
 
         except Exception as e:
+            elapsed = time.perf_counter() - start_time
+            LLM_LATENCY_SECONDS.labels(model=self.model_name).observe(elapsed)
+            LLM_REQUESTS_TOTAL.labels(model=self.model_name, status="error").inc()
+            LLM_ERRORS_TOTAL.labels(model=self.model_name, error_type=type(e).__name__).inc()
+
             logger.error(f"LLM API request failed ({e}). Attempting fallback.")
             if "mock" in self.model_name.lower() or not self.api_key:
                 return self._mock_generate(messages, json_mode=json_mode)
