@@ -104,6 +104,67 @@ class DatabaseManager:
             self.is_postgres_connected = False
 
     # ------------------------------------------------------------
+    # Sessions Repository
+    # ------------------------------------------------------------
+    async def get_user_sessions(
+        self,
+        user_id: str,
+        active_only: bool = False,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Retrieves sessions for a student, ordered by most recent first.
+
+        Args:
+            user_id: Student identifier.
+            active_only: If True, return only sessions where is_active=TRUE.
+            limit: Maximum number of sessions to return (default 20).
+            offset: Number of sessions to skip for pagination (default 0).
+        """
+        user_id = str(user_id)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    if active_only:
+                        rows = await conn.fetch(
+                            """
+                            SELECT id, user_id, title, is_active, created_at, updated_at
+                            FROM sessions
+                            WHERE user_id = $1::uuid AND is_active = TRUE
+                            ORDER BY updated_at DESC
+                            LIMIT $2 OFFSET $3
+                            """,
+                            uuid.UUID(user_id),
+                            limit,
+                            offset,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            """
+                            SELECT id, user_id, title, is_active, created_at, updated_at
+                            FROM sessions
+                            WHERE user_id = $1::uuid
+                            ORDER BY updated_at DESC
+                            LIMIT $2 OFFSET $3
+                            """,
+                            uuid.UUID(user_id),
+                            limit,
+                            offset,
+                        )
+                    return [dict(r) for r in rows]
+            except Exception as e:
+                logger.error(f"PostgreSQL get_user_sessions error: {e}. Falling back to in-memory.")
+
+        matching = [
+            s for s in _in_memory_db["sessions"].values()
+            if s["user_id"] == user_id
+            and (not active_only or s.get("is_active", True))
+        ]
+        matching.sort(key=lambda x: x.get("updated_at", x["created_at"]), reverse=True)
+        return matching[offset : offset + limit]
+
+    # ------------------------------------------------------------
     # Interactions Repository
     # ------------------------------------------------------------
     async def save_interaction(
