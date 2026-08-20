@@ -187,6 +187,53 @@ class DatabaseManager:
         matching.sort(key=lambda x: x["created_at"])
         return matching[-limit:]
 
+    async def get_session_chat_history(
+        self,
+        user_id: str,
+        session_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Retrieves the full chat history for a user session with pagination.
+
+        Messages are returned in chronological order (oldest first).
+
+        Args:
+            user_id: Student identifier.
+            session_id: Conversation session identifier.
+            limit: Maximum number of messages to return (default 50).
+            offset: Number of messages to skip for pagination (default 0).
+        """
+        user_id = str(user_id)
+        session_id = str(session_id)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, user_id, session_id, role, raw_text, created_at
+                        FROM interactions
+                        WHERE user_id = $1::uuid AND session_id = $2::uuid
+                        ORDER BY created_at ASC
+                        LIMIT $3 OFFSET $4
+                        """,
+                        uuid.UUID(user_id),
+                        uuid.UUID(session_id),
+                        limit,
+                        offset,
+                    )
+                    return [dict(r) for r in rows]
+            except Exception as e:
+                logger.error(f"PostgreSQL get_session_chat_history error: {e}. Falling back to in-memory.")
+
+        matching = [
+            i for i in _in_memory_db["interactions"].values()
+            if i["user_id"] == user_id and i["session_id"] == session_id
+        ]
+        matching.sort(key=lambda x: x["created_at"])
+        return matching[offset : offset + limit]
+
     # ------------------------------------------------------------
     # Interaction Analyses Repository
     # ------------------------------------------------------------
