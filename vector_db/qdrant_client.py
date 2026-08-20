@@ -13,32 +13,13 @@ from config.settings import get_settings
 
 logger = logging.getLogger("manora.vector_db")
 
-
-def _generate_fallback_embedding(text: str, dim: int = 128) -> List[float]:
-    """Generates a deterministic pseudo-semantic dense vector for offline/testing."""
-    vec = [0.0] * dim
-    words = text.lower().split()
-    if not words:
-        return vec
-
-    for word in words:
-        h = int(hashlib.md5(word.encode("utf-8")).hexdigest(), 16)
-        for i in range(dim):
-            bit = (h >> (i % 32)) & 1
-            vec[i] += 1.0 if bit else -1.0
-
-    # Normalize vector to unit length
-    norm = math.sqrt(sum(x * x for x in vec))
-    if norm > 0:
-        vec = [round(x / norm, 5) for x in vec]
-    return vec
-
+from vector_db.embedding_client import embedding_client
 
 class QdrantAdapter:
     """Adapter for Qdrant Vector Database semantic memory store."""
 
     COLLECTION_NAME = "long_term_memories"
-    VECTOR_DIM = 128
+    VECTOR_DIM = 1024
 
     def __init__(self):
         self.settings = get_settings()
@@ -107,7 +88,7 @@ class QdrantAdapter:
 
     def _get_embedding(self, text: str) -> List[float]:
         """Generates embedding vector for memory text."""
-        return _generate_fallback_embedding(text, self.VECTOR_DIM)
+        return embedding_client.embed_text(text)
 
 
     # ---------------------------------------------------------
@@ -290,66 +271,6 @@ class QdrantAdapter:
             reverse=True,
         )
 
-        return results[:limit]
-
-
-    def search_memories(
-        self,
-        user_id: str,
-        query_text: str,
-        limit: int = 5,
-        score_threshold: float = 0.2,
-    ) -> List[Dict[str, Any]]:
-        """
-        Performs semantic similarity search for student memories.
-        """
-        user_id = str(user_id)
-        query_vector = self._get_embedding(query_text)
-
-        # If live Qdrant is connected
-        if self.client:
-            try:
-                from qdrant_client.http.models import FieldCondition, Filter, MatchValue
-                search_filter = Filter(
-                    must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
-                )
-                results = self.client.query_points(
-                    collection_name=self.COLLECTION_NAME,
-                    query=query_vector,
-                    query_filter=search_filter,
-                    limit=limit,
-                    score_threshold=score_threshold,
-                ).points
-
-                return [
-                    {
-                        "memory_id": hit.payload.get("memory_id"),
-                        "text": hit.payload.get("text"),
-                        "score": round(hit.score, 3),
-                        "metadata": hit.payload,
-                    }
-                    for hit in results
-                ]
-            except Exception as e:
-                logger.error(f"Qdrant search error: {e}. Falling back to in-memory cosine search.")
-
-        # In-memory cosine similarity search
-        results = []
-        for mem_id, data in self._in_memory_vectors.items():
-            if data["user_id"] != user_id:
-                continue
-            v = data["vector"]
-            # Cosine similarity for normalized vectors = dot product
-            dot = sum(a * b for a, b in zip(query_vector, v))
-            if dot >= score_threshold:
-                results.append({
-                    "memory_id": mem_id,
-                    "text": data["payload"].get("text", ""),
-                    "score": round(dot, 3),
-                    "metadata": data["payload"],
-                })
-
-        results.sort(key=lambda x: x["score"], reverse=True)
         return results[:limit]
 
     def delete_memory(self, memory_id: str) -> bool:
