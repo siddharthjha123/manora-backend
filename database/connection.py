@@ -104,6 +104,67 @@ class DatabaseManager:
             self.is_postgres_connected = False
 
     # ------------------------------------------------------------
+    # Sessions Repository
+    # ------------------------------------------------------------
+    async def get_user_sessions(
+        self,
+        user_id: str,
+        active_only: bool = False,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Retrieves sessions for a student, ordered by most recent first.
+
+        Args:
+            user_id: Student identifier.
+            active_only: If True, return only sessions where is_active=TRUE.
+            limit: Maximum number of sessions to return (default 20).
+            offset: Number of sessions to skip for pagination (default 0).
+        """
+        user_id = str(user_id)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    if active_only:
+                        rows = await conn.fetch(
+                            """
+                            SELECT id, user_id, title, is_active, created_at, updated_at
+                            FROM sessions
+                            WHERE user_id = $1::uuid AND is_active = TRUE
+                            ORDER BY updated_at DESC
+                            LIMIT $2 OFFSET $3
+                            """,
+                            uuid.UUID(user_id),
+                            limit,
+                            offset,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            """
+                            SELECT id, user_id, title, is_active, created_at, updated_at
+                            FROM sessions
+                            WHERE user_id = $1::uuid
+                            ORDER BY updated_at DESC
+                            LIMIT $2 OFFSET $3
+                            """,
+                            uuid.UUID(user_id),
+                            limit,
+                            offset,
+                        )
+                    return [dict(r) for r in rows]
+            except Exception as e:
+                logger.error(f"PostgreSQL get_user_sessions error: {e}. Falling back to in-memory.")
+
+        matching = [
+            s for s in _in_memory_db["sessions"].values()
+            if s["user_id"] == user_id
+            and (not active_only or s.get("is_active", True))
+        ]
+        matching.sort(key=lambda x: x.get("updated_at", x["created_at"]), reverse=True)
+        return matching[offset : offset + limit]
+
+    # ------------------------------------------------------------
     # Interactions Repository
     # ------------------------------------------------------------
     async def save_interaction(
@@ -186,6 +247,53 @@ class DatabaseManager:
         ]
         matching.sort(key=lambda x: x["created_at"])
         return matching[-limit:]
+
+    async def get_session_chat_history(
+        self,
+        user_id: str,
+        session_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Retrieves the full chat history for a user session with pagination.
+
+        Messages are returned in chronological order (oldest first).
+
+        Args:
+            user_id: Student identifier.
+            session_id: Conversation session identifier.
+            limit: Maximum number of messages to return (default 50).
+            offset: Number of messages to skip for pagination (default 0).
+        """
+        user_id = str(user_id)
+        session_id = str(session_id)
+
+        if self.is_postgres_connected and self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, user_id, session_id, role, raw_text, created_at
+                        FROM interactions
+                        WHERE user_id = $1::uuid AND session_id = $2::uuid
+                        ORDER BY created_at ASC
+                        LIMIT $3 OFFSET $4
+                        """,
+                        uuid.UUID(user_id),
+                        uuid.UUID(session_id),
+                        limit,
+                        offset,
+                    )
+                    return [dict(r) for r in rows]
+            except Exception as e:
+                logger.error(f"PostgreSQL get_session_chat_history error: {e}. Falling back to in-memory.")
+
+        matching = [
+            i for i in _in_memory_db["interactions"].values()
+            if i["user_id"] == user_id and i["session_id"] == session_id
+        ]
+        matching.sort(key=lambda x: x["created_at"])
+        return matching[offset : offset + limit]
 
     # ------------------------------------------------------------
     # Interaction Analyses Repository
