@@ -15,6 +15,7 @@ from api.interactions import router as interactions_router
 from api.memory_tree import router as memory_tree_router
 from config.settings import get_settings
 from database.connection import db
+from observability import init_sentry, init_prometheus, init_langfuse, flush_langfuse, ObservabilityMiddleware
 
 # Setup logging
 logging.basicConfig(
@@ -29,10 +30,17 @@ async def lifespan(app: FastAPI):
     """Application lifespan context for startup and shutdown hooks."""
     settings = get_settings()
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION} ({settings.ENVIRONMENT})")
+    
+    # Initialize Langfuse observability on startup
+    init_langfuse()
+    
     await db.initialize()
     yield
     logger.info("Shutting down MANORA Backend.")
     await db.close()
+    
+    # Flush pending Langfuse events on shutdown
+    flush_langfuse()
 
 
 settings = get_settings()
@@ -49,7 +57,11 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS middleware
+# Initialize Sentry error monitoring early
+init_sentry(app)
+
+# Add Observability and CORS middlewares
+app.add_middleware(ObservabilityMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -57,6 +69,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize Prometheus HTTP metrics & expose /metrics endpoint
+init_prometheus(app)
 
 # Mount API routers
 app.include_router(interactions_router)
