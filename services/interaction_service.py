@@ -220,13 +220,16 @@ class InteractionService:
 
             # Record interaction success metric
             INTERACTIONS_TOTAL.labels(status="success").inc()
-            trace.update(
-                output={
-                    "interaction_id": interaction_id,
-                    "primary_emotion": emotion_analysis.primary_emotion,
-                    "expression": buddy_response.expression,
-                }
-            )
+            try:
+                trace.update(
+                    output={
+                        "interaction_id": interaction_id,
+                        "primary_emotion": emotion_analysis.primary_emotion,
+                        "expression": buddy_response.expression,
+                    }
+                )
+            except Exception as _trace_exc:
+                logger.debug("Langfuse trace update ignored: %s", _trace_exc)
 
             return {
                 "interaction_id": interaction_id,
@@ -237,7 +240,10 @@ class InteractionService:
 
         except Exception as exc:
             INTERACTIONS_TOTAL.labels(status="error").inc()
-            trace.update(metadata={"error": str(exc)})
+            try:
+                trace.update(metadata={"error": str(exc)})
+            except Exception as _trace_exc:
+                logger.debug("Langfuse trace error-update ignored: %s", _trace_exc)
             raise
 
 

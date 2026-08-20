@@ -109,10 +109,10 @@ docker-compose up -d
 docker-compose ps
 ```
 
-| Service | Container Name | Host Port | Target URL |
-| :--- | :--- | :--- | :--- |
-| **Prometheus** | `manora_prometheus` | `9090` | `http://localhost:9090` |
-| **Grafana** | `manora_grafana` | `3000` | `http://localhost:3000` |
+| Service             | Container Name        | Host Port             | Target URL              |
+| :---                | :---                  | :---                  | :---                    |
+| **Prometheus**      | `manora_prometheus`   | `9090`                | `http://localhost:9090` |
+| **Grafana**         | `manora_grafana`      | `3000`                | `http://localhost:3000` |
 
 ---
 
