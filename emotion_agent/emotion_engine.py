@@ -12,6 +12,7 @@ from emotion_agent.emotion_prompt import build_emotion_analysis_prompt
 from emotion_agent.emotion_schema import EmotionAnalysis
 from llm.base import LLMClient, llm_client
 from ml.emotion_classifier import EmotionClassifier, emotion_classifier
+from observability.metrics import EMOTION_PREDICTIONS_TOTAL
 
 logger = logging.getLogger("manora.emotion.engine")
 
@@ -75,6 +76,10 @@ class EmotionAgent:
 
         # Step 4: Validate and parse output
         analysis = EmotionParser.parse(raw_response, interaction_id=interaction_id)
+
+        # Record emotion prediction metric (using low-cardinality primary_emotion label)
+        primary = (analysis.primary_emotion or "unknown").lower().strip()
+        EMOTION_PREDICTIONS_TOTAL.labels(primary_emotion=primary).inc()
 
         logger.info(
             f"Emotion analysis completed for interaction {interaction_id}: "
